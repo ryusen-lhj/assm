@@ -1,6 +1,6 @@
 import streamlit as st
 import numpy as np
-import cv2
+import opencv-python-headless
 import zipfile
 import os
 import shutil

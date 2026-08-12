@@ -1,21 +1,15 @@
 import streamlit as st
 import numpy as np
-import opencv-python-headless
-import zipfile
-import os
-import shutil
-import random
-import pickle
-import tempfile
 
 from PIL import Image
+
 from skimage.feature import hog
 
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score
 
 
 # ============================================================
@@ -263,20 +257,17 @@ def find_dataset_folder():
 
 def preprocess_image(image):
 
-    # Convert PIL image to RGB
-    image = image.convert("RGB")
+    # Convert image to grayscale
+    gray = image.convert("L")
 
-    # Convert to numpy
-    image = np.array(image)
+    # Resize image
+    gray = gray.resize(IMAGE_SIZE)
 
-    # Convert RGB -> grayscale
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    # Convert to NumPy array
+    gray = np.array(gray)
 
-    # Resize
-    gray = cv2.resize(gray, IMAGE_SIZE)
-
-    # Improve contrast
-    gray = cv2.equalizeHist(gray)
+    # Normalize pixel values
+    gray = gray.astype(np.float32) / 255.0
 
     return gray
 

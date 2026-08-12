@@ -4,3 +4,4 @@ opencv-python-headless
 Pillow
 scikit-learn
 scikit-image
+cv2

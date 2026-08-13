@@ -1,13 +1,12 @@
 import os
+import io
 import zipfile
 import time
-import threading
- 
-import av
+import tempfile
+
 import numpy as np
 import streamlit as st
 import mediapipe as mp
- 
 from PIL import Image
  
 from sklearn.model_selection import train_test_split

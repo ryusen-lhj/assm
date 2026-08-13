@@ -1,15 +1,4 @@
-opencv-python==4.10.0.84
-mediapipe==0.10.14
-tensorflow==2.16.1
-numpy==1.26.4
-pillow==10.4.0
-matplotlib==3.9.0
- 
-# Desktop app (sign_app.py) only:
-customtkinter==5.2.2
-pyttsx3==2.90
- 
-# Streamlit app (streamlit_app.py) only:
-streamlit==1.38.0
-streamlit-webrtc==0.47.9
-av==12.3.0
+streamlit
+numpy
+Pillow
+scikit-learn

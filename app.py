@@ -6,26 +6,21 @@ import time
 import av
 import numpy as np
 import streamlit as st
+import mediapipe as mp
 
-from PIL import Image, ImageDraw, ImageFont
-
+from PIL import Image, ImageDraw
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score
 
-import mediapipe as mp
-
-from streamlit_webrtc import (
-    webrtc_streamer,
-    WebRtcMode
-)
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
 
 
 # ============================================================
 # SIGNOVA
-# REAL-TIME HAND SIGN RECOGNITION
+# REAL-TIME HAND SIGN LANGUAGE RECOGNITION
 # ============================================================
 
 st.set_page_config(
@@ -37,7 +32,19 @@ st.set_page_config(
 
 
 # ============================================================
-# CUSTOM UI
+# CONFIGURATION
+# ============================================================
+
+ZIP_FILE = "archive.zip"
+EXTRACT_FOLDER = "signova_dataset"
+
+CONFIDENCE_THRESHOLD = 0.65
+STABLE_FRAMES = 8
+RECORD_COOLDOWN = 0.8
+
+
+# ============================================================
+# CUSTOM CSS
 # ============================================================
 
 st.markdown("""
@@ -47,12 +54,12 @@ st.markdown("""
     background:
         radial-gradient(
             circle at 15% 10%,
-            rgba(124, 58, 237, 0.18),
+            rgba(124,58,237,0.18),
             transparent 30%
         ),
         radial-gradient(
             circle at 85% 15%,
-            rgba(14, 165, 233, 0.12),
+            rgba(14,165,233,0.12),
             transparent 30%
         ),
         #070a12;
@@ -72,9 +79,6 @@ footer {
     visibility: hidden;
 }
 
-
-/* SIDEBAR */
-
 [data-testid="stSidebar"] {
     background: #0b0f1a;
     border-right: 1px solid rgba(255,255,255,0.07);
@@ -84,16 +88,15 @@ footer {
 /* BRAND */
 
 .brand-icon {
-    width: 55px;
-    height: 55px;
-
-    border-radius: 16px;
+    width: 58px;
+    height: 58px;
+    border-radius: 17px;
 
     display: flex;
     align-items: center;
     justify-content: center;
 
-    font-size: 28px;
+    font-size: 30px;
 
     background:
         linear-gradient(
@@ -104,7 +107,7 @@ footer {
 }
 
 .brand-title {
-    font-size: 26px;
+    font-size: 28px;
     font-weight: 900;
     margin-top: 12px;
     letter-spacing: 1px;
@@ -126,7 +129,7 @@ footer {
 }
 
 .hero-title {
-    font-size: 50px;
+    font-size: 52px;
     font-weight: 950;
     letter-spacing: -2px;
 
@@ -152,9 +155,11 @@ footer {
 /* SENTENCE */
 
 .sentence-box {
-    margin: 20px 0;
+    margin: 22px 0;
 
-    padding: 20px 24px;
+    padding: 20px 25px;
+
+    min-height: 95px;
 
     border-radius: 20px;
 
@@ -177,17 +182,14 @@ footer {
 }
 
 .sentence {
-    min-height: 60px;
-
-    display: flex;
-    align-items: center;
-
-    font-size: 34px;
+    font-size: 35px;
     font-weight: 900;
 
     letter-spacing: 5px;
 
     margin-top: 8px;
+
+    word-break: break-word;
 }
 
 .empty {
@@ -198,39 +200,10 @@ footer {
 }
 
 
-/* DETECTION */
+/* CARDS */
 
-.detection {
-    border-radius: 18px;
-
-    padding: 18px;
-
-    background:
-        rgba(15,23,42,0.75);
-
-    border:
-        1px solid rgba(255,255,255,0.07);
-
-    text-align: center;
-}
-
-.detected {
-    color: #4ade80;
-    font-weight: 900;
-}
-
-.not-detected {
-    color: #64748b;
-    font-weight: 900;
-}
-
-
-/* PREDICTION */
-
-.prediction {
-    text-align: center;
-
-    padding: 20px;
+.card {
+    padding: 22px;
 
     border-radius: 20px;
 
@@ -241,6 +214,23 @@ footer {
         1px solid rgba(255,255,255,0.07);
 }
 
+
+/* PREDICTION */
+
+.prediction {
+    text-align: center;
+
+    padding: 30px;
+
+    border-radius: 22px;
+
+    background:
+        rgba(15,23,42,0.80);
+
+    border:
+        1px solid rgba(255,255,255,0.08);
+}
+
 .prediction-label {
     color: #64748b;
     font-size: 11px;
@@ -249,7 +239,7 @@ footer {
 }
 
 .letter {
-    font-size: 95px;
+    font-size: 105px;
     font-weight: 950;
 
     line-height: 1;
@@ -268,28 +258,20 @@ footer {
 }
 
 
-/* INFO */
+/* STATUS */
 
-.info {
-    background:
-        rgba(99,102,241,0.07);
+.status-online {
+    color: #4ade80;
+    font-weight: 900;
+}
 
-    border-left:
-        3px solid #6366f1;
-
-    border-radius: 8px;
-
-    padding: 15px;
-
-    color: #cbd5e1;
-
-    font-size: 13px;
-
-    line-height: 1.7;
+.status-offline {
+    color: #64748b;
+    font-weight: 900;
 }
 
 
-/* METRICS */
+/* METRIC */
 
 .metric {
     background:
@@ -304,7 +286,7 @@ footer {
 }
 
 .metric-value {
-    font-size: 26px;
+    font-size: 27px;
     font-weight: 900;
 }
 
@@ -315,31 +297,63 @@ footer {
     letter-spacing: 1px;
 }
 
+
+/* INFO */
+
+.info {
+    background:
+        rgba(99,102,241,0.07);
+
+    border-left:
+        3px solid #6366f1;
+
+    border-radius: 8px;
+
+    padding: 17px;
+
+    color: #cbd5e1;
+
+    font-size: 13px;
+
+    line-height: 1.7;
+}
+
 </style>
 """, unsafe_allow_html=True)
-
-
-# ============================================================
-# CONSTANTS
-# ============================================================
-
-ZIP_FILE = "archive.zip"
-
-EXTRACT_FOLDER = "signova_dataset"
-
-CONFIDENCE_THRESHOLD = 0.65
-
-STABLE_FRAMES = 8
-
-MIN_HAND_SIZE = 40
 
 
 # ============================================================
 # SESSION STATE
 # ============================================================
 
-if "sentence" not in st.session_state:
-    st.session_state.sentence = ""
+if "page" not in st.session_state:
+    st.session_state.page = "Live Translator"
+
+
+# ============================================================
+# SHARED REAL-TIME STATE
+# ============================================================
+
+if "shared_state" not in st.session_state:
+
+    st.session_state.shared_state = {
+        "hand_detected": False,
+        "prediction": "-",
+        "confidence": 0.0,
+        "sentence": "",
+        "stable_prediction": None,
+        "stable_count": 0,
+        "last_recorded": None,
+        "last_record_time": 0.0
+    }
+
+
+if "state_lock" not in st.session_state:
+    st.session_state.state_lock = threading.Lock()
+
+
+shared = st.session_state.shared_state
+state_lock = st.session_state.state_lock
 
 
 # ============================================================
@@ -348,46 +362,38 @@ if "sentence" not in st.session_state:
 
 mp_hands = mp.solutions.hands
 
-mp_drawing = mp.solutions.drawing_utils
-
 
 # ============================================================
-# DATASET
+# DATASET EXTRACTION
 # ============================================================
 
-def find_dataset():
+def locate_dataset():
 
-    if not os.path.exists(
-        EXTRACT_FOLDER
-    ):
+    if not os.path.exists(EXTRACT_FOLDER):
         return None
 
-    for root, dirs, files in os.walk(
-        EXTRACT_FOLDER
-    ):
+    candidate = os.path.join(
+        EXTRACT_FOLDER,
+        "DATASET"
+    )
 
-        if os.path.basename(
-            root
-        ).upper() == "DATASET":
-
-            return root
+    if os.path.isdir(candidate):
+        return candidate
 
     return None
 
 
-def extract_dataset():
+def prepare_dataset():
 
-    dataset = find_dataset()
+    existing = locate_dataset()
 
-    if dataset:
-        return dataset
+    if existing:
+        return existing
 
-    if not os.path.exists(
-        ZIP_FILE
-    ):
+    if not os.path.exists(ZIP_FILE):
 
         st.error(
-            "archive.zip was not found."
+            "archive.zip was not found in the GitHub repository."
         )
 
         st.stop()
@@ -400,18 +406,24 @@ def extract_dataset():
     with zipfile.ZipFile(
         ZIP_FILE,
         "r"
-    ) as z:
+    ) as archive:
 
-        z.extractall(
+        archive.extractall(
             EXTRACT_FOLDER
         )
 
-    dataset = find_dataset()
+    dataset = locate_dataset()
 
     if dataset is None:
 
         st.error(
-            "DATASET folder was not found inside archive.zip."
+            """
+            SIGNOVA could not find:
+
+            DATASET/
+
+            inside archive.zip.
+            """
         )
 
         st.stop()
@@ -419,11 +431,47 @@ def extract_dataset():
     return dataset
 
 
+dataset_path = prepare_dataset()
+
+
 # ============================================================
-# LANDMARK FEATURE EXTRACTION
+# FEATURE EXTRACTION
 # ============================================================
 
-def landmark_features(landmarks):
+CONNECTIONS = [
+
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 4),
+
+    (0, 5),
+    (5, 6),
+    (6, 7),
+    (7, 8),
+
+    (0, 9),
+    (9, 10),
+    (10, 11),
+    (11, 12),
+
+    (0, 13),
+    (13, 14),
+    (14, 15),
+    (15, 16),
+
+    (0, 17),
+    (17, 18),
+    (18, 19),
+    (19, 20),
+
+    (5, 9),
+    (9, 13),
+    (13, 17)
+]
+
+
+def create_features(landmarks):
 
     points = np.array(
         [
@@ -435,12 +483,13 @@ def landmark_features(landmarks):
 
             for landmark in landmarks
         ],
+
         dtype=np.float32
     )
 
 
     # --------------------------------------------------------
-    # Normalize using wrist
+    # TRANSLATION NORMALISATION
     # --------------------------------------------------------
 
     wrist = points[0].copy()
@@ -449,7 +498,7 @@ def landmark_features(landmarks):
 
 
     # --------------------------------------------------------
-    # Scale normalization
+    # SCALE NORMALISATION
     # --------------------------------------------------------
 
     scale = np.max(
@@ -460,101 +509,59 @@ def landmark_features(landmarks):
     )
 
     if scale > 0:
-
         points = points / scale
 
 
     # --------------------------------------------------------
-    # Add vector information
+    # VECTOR FEATURES
     # --------------------------------------------------------
 
     vectors = []
 
-    connections = [
-        (0,1),
-        (1,2),
-        (2,3),
-        (3,4),
+    for a, b in CONNECTIONS:
 
-        (0,5),
-        (5,6),
-        (6,7),
-        (7,8),
-
-        (0,9),
-        (9,10),
-        (10,11),
-        (11,12),
-
-        (0,13),
-        (13,14),
-        (14,15),
-        (15,16),
-
-        (0,17),
-        (17,18),
-        (18,19),
-        (19,20)
-    ]
-
-
-    for a, b in connections:
-
-        vector = points[b] - points[a]
+        vector = (
+            points[b]
+            -
+            points[a]
+        )
 
         vectors.extend(
             vector.tolist()
         )
 
 
+    vectors = np.asarray(
+        vectors,
+        dtype=np.float32
+    )
+
+
+    # --------------------------------------------------------
+    # FINAL FEATURE VECTOR
+    # --------------------------------------------------------
+
     features = np.concatenate(
         [
             points.flatten(),
-            np.array(
-                vectors,
-                dtype=np.float32
-            )
+            vectors
         ]
     )
 
 
-    return features
-
-
-# ============================================================
-# EXTRACT LANDMARKS FROM IMAGE
-# ============================================================
-
-def get_image_landmarks(
-    image,
-    hands_detector
-):
-
-    rgb = np.array(
-        image.convert("RGB")
+    return features.astype(
+        np.float32
     )
 
-    results = hands_detector.process(
-        rgb
-    )
-
-    if not results.multi_hand_landmarks:
-
-        return None
-
-    return results.multi_hand_landmarks[0].landmark
-
 
 # ============================================================
-# LOAD DATASET LANDMARKS
+# DATASET LOADING
 # ============================================================
 
 @st.cache_data(
     show_spinner=False
 )
-def load_landmark_dataset(
-    dataset_path
-):
+def load_dataset(dataset_folder):
 
     X = []
     y = []
@@ -562,96 +569,121 @@ def load_landmark_dataset(
     class_names = []
 
 
+    # IMPORTANT:
+    # Dataset contains 0-9 and A-Z.
+
+    expected_classes = (
+        [str(i) for i in range(10)]
+        +
+        [
+            chr(i)
+            for i in range(
+                ord("A"),
+                ord("Z") + 1
+            )
+        ]
+    )
+
+
     with mp_hands.Hands(
+
         static_image_mode=True,
+
         max_num_hands=1,
-        min_detection_confidence=0.5
+
+        min_detection_confidence=0.50
+
     ) as detector:
 
 
-        for class_name in sorted(
-            os.listdir(dataset_path)
-        ):
+        for class_name in expected_classes:
 
             folder = os.path.join(
-                dataset_path,
+                dataset_folder,
                 class_name
             )
 
-            if not os.path.isdir(
-                folder
-            ):
 
+            if not os.path.isdir(folder):
                 continue
 
 
-            image_files = [
-                f
-                for f in os.listdir(
-                    folder
-                )
+            class_count = 0
 
-                if f.lower().endswith(
-                    (
-                        ".jpg",
-                        ".jpeg",
-                        ".png"
+
+            image_files = sorted(
+                [
+                    filename
+
+                    for filename
+                    in os.listdir(folder)
+
+                    if filename.lower().endswith(
+                        (
+                            ".jpg",
+                            ".jpeg",
+                            ".png"
+                        )
                     )
-                )
-            ]
-
-
-            valid_class = False
+                ]
+            )
 
 
             for filename in image_files:
 
-                path = os.path.join(
+                filepath = os.path.join(
                     folder,
                     filename
                 )
 
+
                 try:
 
                     image = Image.open(
-                        path
+                        filepath
                     ).convert(
                         "RGB"
                     )
 
-                    landmarks = get_image_landmarks(
-                        image,
-                        detector
+
+                    image_array = np.asarray(
+                        image
                     )
 
 
-                    if landmarks is None:
+                    results = detector.process(
+                        image_array
+                    )
 
+
+                    if not results.multi_hand_landmarks:
                         continue
 
 
-                    features = landmark_features(
+                    landmarks = (
+                        results
+                        .multi_hand_landmarks[0]
+                        .landmark
+                    )
+
+
+                    features = create_features(
                         landmarks
                     )
 
 
-                    X.append(
-                        features
-                    )
+                    X.append(features)
 
-                    y.append(
-                        class_name
-                    )
+                    y.append(class_name)
 
-                    valid_class = True
+                    class_count += 1
+
 
                 except Exception:
-
                     continue
 
 
-            if valid_class:
-
+            if class_count > 0:
                 class_names.append(
                     class_name
                 )
@@ -665,35 +697,64 @@ def load_landmark_dataset(
 
 
 # ============================================================
-# TRAIN CLASSIFIER
+# LOAD DATA
+# ============================================================
+
+with st.spinner(
+    "SIGNOVA is extracting hand landmarks from your 900-image dataset..."
+):
+
+    X, y, classes = load_dataset(
+        dataset_path
+    )
+
+
+if len(X) == 0:
+
+    st.error(
+        """
+        No hands were detected in the dataset.
+
+        Please check that the dataset images contain
+        visible hands.
+        """
+    )
+
+    st.stop()
+
+
+# ============================================================
+# TRAIN MODEL
 # ============================================================
 
 @st.cache_resource(
     show_spinner=False
 )
-def train_classifier(
-    X,
-    y
-):
+def train_model(X, y):
 
     X_train, X_test, y_train, y_test = train_test_split(
+
         X,
         y,
+
         test_size=0.20,
+
         random_state=42,
+
         stratify=y
     )
 
 
     model = Pipeline(
+
         [
             (
-                "scaler",
+                "normalizer",
                 StandardScaler()
             ),
 
             (
-                "classifier",
+                "knn",
                 KNeighborsClassifier(
                     n_neighbors=5,
                     weights="distance"
@@ -709,14 +770,14 @@ def train_classifier(
     )
 
 
-    predictions = model.predict(
+    prediction = model.predict(
         X_test
     )
 
 
     accuracy = accuracy_score(
         y_test,
-        predictions
+        prediction
     )
 
 
@@ -728,80 +789,28 @@ def train_classifier(
     )
 
 
-# ============================================================
-# PREPARE DATA
-# ============================================================
-
-dataset_path = extract_dataset()
-
-
-with st.spinner(
-    "SIGNOVA is analysing the hand-sign dataset..."
-):
-
-    X, y, classes = load_landmark_dataset(
-        dataset_path
-    )
-
-
-if len(X) == 0:
-
-    st.error(
-        """
-        No hand landmarks could be extracted from
-        the dataset.
-
-        Make sure the images contain clearly visible hands.
-        """
-    )
-
-    st.stop()
-
-
-model, accuracy, train_count, test_count = train_classifier(
+model, accuracy, train_count, test_count = train_model(
     X,
     y
 )
 
 
 # ============================================================
-# SHARED REAL-TIME STATE
+# DRAW VISUAL OVERLAY
 # ============================================================
 
-class DetectionState:
-
-    def __init__(self):
-
-        self.lock = threading.Lock()
-
-        self.hand_detected = False
-
-        self.prediction = "-"
-
-        self.confidence = 0.0
-
-        self.sentence = ""
-
-        self.stable_prediction = None
-
-        self.stable_count = 0
-
-        self.last_recorded = None
-
-        self.last_record_time = 0
-
-
-state = DetectionState()
-
-
-# ============================================================
-# DRAW HAND OVERLAY
-# ============================================================
-
-def draw_hand_overlay(
-    image,
-    landmarks
+def draw_overlay(
+    frame,
+    landmarks,
+    prediction,
+    confidence
 ):
+
+    image = Image.fromarray(
+        frame
+    ).convert(
+        "RGB"
+    )
 
     draw = ImageDraw.Draw(
         image
@@ -812,372 +821,367 @@ def draw_hand_overlay(
 
 
     # --------------------------------------------------------
-    # GREEN BOUNDING BOX
+    # LANDMARK PIXELS
     # --------------------------------------------------------
 
-    xs = [
-        int(lm.x * width)
+    coords = [
+
+        (
+            int(lm.x * width),
+            int(lm.y * height)
+        )
+
         for lm in landmarks
+    ]
+
+
+    xs = [
+        p[0]
+        for p in coords
     ]
 
     ys = [
-        int(lm.y * height)
-        for lm in landmarks
+        p[1]
+        for p in coords
     ]
 
 
-    min_x = max(
-        min(xs) - 20,
+    # --------------------------------------------------------
+    # GREEN DETECTION FRAME
+    # --------------------------------------------------------
+
+    left = max(
+        min(xs) - 25,
         0
     )
 
-    max_x = min(
-        max(xs) + 20,
+    top = max(
+        min(ys) - 25,
+        0
+    )
+
+    right = min(
+        max(xs) + 25,
         width
     )
 
-    min_y = max(
-        min(ys) - 20,
-        0
-    )
-
-    max_y = min(
-        max(ys) + 20,
+    bottom = min(
+        max(ys) + 25,
         height
     )
 
 
-    # Green hand detection frame
+    draw.rectangle(
+        [
+            left,
+            top,
+            right,
+            bottom
+        ],
 
-    for offset in range(4):
+        outline="lime",
 
-        draw.rectangle(
-            [
-                min_x - offset,
-                min_y - offset,
-                max_x + offset,
-                max_y + offset
-            ],
-
-            outline="lime",
-            width=1
-        )
-
-
-    # --------------------------------------------------------
-    # HAND CONNECTIONS
-    # --------------------------------------------------------
-
-    connections = [
-
-        (0,1),
-        (1,2),
-        (2,3),
-        (3,4),
-
-        (0,5),
-        (5,6),
-        (6,7),
-        (7,8),
-
-        (0,9),
-        (9,10),
-        (10,11),
-        (11,12),
-
-        (0,13),
-        (13,14),
-        (14,15),
-        (15,16),
-
-        (0,17),
-        (17,18),
-        (18,19),
-        (19,20),
-
-        (5,9),
-        (9,13),
-        (13,17),
-        (0,17),
-        (0,5)
-    ]
+        width=5
+    )
 
 
     # --------------------------------------------------------
     # DRAW VECTORS / EDGES
     # --------------------------------------------------------
 
-    for a, b in connections:
+    for a, b in CONNECTIONS:
 
-        x1 = int(
-            landmarks[a].x * width
-        )
+        x1, y1 = coords[a]
 
-        y1 = int(
-            landmarks[a].y * height
-        )
-
-        x2 = int(
-            landmarks[b].x * width
-        )
-
-        y2 = int(
-            landmarks[b].y * height
-        )
+        x2, y2 = coords[b]
 
 
         draw.line(
+
             [
                 (x1, y1),
                 (x2, y2)
             ],
 
             fill="white",
+
             width=3
         )
 
 
     # --------------------------------------------------------
-    # RED LANDMARK POINTS
+    # DRAW RED POINTS
     # --------------------------------------------------------
 
-    for landmark in landmarks:
-
-        x = int(
-            landmark.x * width
-        )
-
-        y = int(
-            landmark.y * height
-        )
-
+    for x, y_point in coords:
 
         radius = 6
 
 
         draw.ellipse(
+
             [
                 x - radius,
-                y - radius,
+                y_point - radius,
                 x + radius,
-                y + radius
+                y_point + radius
             ],
 
             fill="red",
+
             outline="white",
+
             width=1
         )
 
 
-    return image
+    # --------------------------------------------------------
+    # PREDICTION PANEL
+    # --------------------------------------------------------
+
+    panel_x = 20
+
+    panel_y = 20
+
+    panel_w = 250
+
+    panel_h = 95
+
+
+    draw.rounded_rectangle(
+
+        [
+            panel_x,
+            panel_y,
+            panel_x + panel_w,
+            panel_y + panel_h
+        ],
+
+        radius=15,
+
+        fill=(8, 15, 30),
+
+        outline=(74, 222, 128),
+
+        width=3
+    )
+
+
+    draw.text(
+
+        (
+            panel_x + 15,
+            panel_y + 12
+        ),
+
+        f"SIGN: {prediction}",
+
+        fill="white"
+    )
+
+
+    draw.text(
+
+        (
+            panel_x + 15,
+            panel_y + 45
+        ),
+
+        f"CONFIDENCE: {confidence * 100:.1f}%",
+
+        fill="lime"
+    )
+
+
+    return np.asarray(
+        image
+    )
 
 
 # ============================================================
-# VIDEO PROCESSOR
+# REAL-TIME CALLBACK
 # ============================================================
 
-class SignovaProcessor:
+def video_frame_callback(frame):
 
-    def __init__(self):
-
-        self.hands = mp_hands.Hands(
-
-            static_image_mode=False,
-
-            max_num_hands=1,
-
-            min_detection_confidence=0.60,
-
-            min_tracking_confidence=0.60
-        )
+    frame_array = frame.to_ndarray(
+        format="rgb24"
+    )
 
 
-    def recv(self, frame):
+    with mp_hands.Hands(
 
-        image = frame.to_image().convert(
-            "RGB"
-        )
+        static_image_mode=False,
 
+        max_num_hands=1,
 
-        image_array = np.array(
-            image
+        min_detection_confidence=0.60,
+
+        min_tracking_confidence=0.60
+
+    ) as detector:
+
+        results = detector.process(
+            frame_array
         )
 
 
         # ----------------------------------------------------
-        # MEDIAPIPE HAND DETECTION
+        # NO HAND
         # ----------------------------------------------------
 
-        results = self.hands.process(
-            image_array
-        )
+        if not results.multi_hand_landmarks:
+
+            with state_lock:
+
+                shared["hand_detected"] = False
+
+                shared["prediction"] = "-"
+
+                shared["confidence"] = 0.0
+
+                shared["stable_prediction"] = None
+
+                shared["stable_count"] = 0
+
+                shared["last_recorded"] = None
 
 
-        with state.lock:
-
-            state.hand_detected = False
+            return av.VideoFrame.from_ndarray(
+                frame_array,
+                format="rgb24"
+            )
 
 
         # ----------------------------------------------------
         # HAND FOUND
         # ----------------------------------------------------
 
-        if results.multi_hand_landmarks:
+        landmarks = (
+            results
+            .multi_hand_landmarks[0]
+            .landmark
+        )
 
-            landmarks = (
-                results.multi_hand_landmarks[0]
-                .landmark
-            )
+
+        features = create_features(
+            landmarks
+        )
+
+
+        features = features.reshape(
+            1,
+            -1
+        )
+
+
+        probabilities = model.predict_proba(
+            features
+        )[0]
+
+
+        best_index = np.argmax(
+            probabilities
+        )
+
+
+        prediction = str(
+            model.classes_[best_index]
+        )
+
+
+        confidence = float(
+            probabilities[best_index]
+        )
+
+
+        current_time = time.time()
+
+
+        with state_lock:
+
+            shared["hand_detected"] = True
+
+            shared["prediction"] = prediction
+
+            shared["confidence"] = confidence
 
 
             # ------------------------------------------------
-            # DRAW RED POINTS + WHITE VECTORS + GREEN BOX
+            # STABILITY DETECTION
             # ------------------------------------------------
 
-            image = draw_hand_overlay(
-                image,
-                landmarks
-            )
+            if (
+                shared["stable_prediction"]
+                ==
+                prediction
+            ):
+
+                shared["stable_count"] += 1
+
+            else:
+
+                shared["stable_prediction"] = prediction
+
+                shared["stable_count"] = 1
 
 
             # ------------------------------------------------
-            # CLASSIFY
+            # RECORD LETTER
             # ------------------------------------------------
 
-            features = landmark_features(
-                landmarks
-            )
+            if (
 
+                confidence >= CONFIDENCE_THRESHOLD
 
-            features = features.reshape(
-                1,
-                -1
-            )
+                and
 
+                shared["stable_count"]
+                >= STABLE_FRAMES
 
-            probabilities = model.predict_proba(
-                features
-            )[0]
+                and
 
+                shared["last_recorded"]
+                != prediction
 
-            best_index = np.argmax(
-                probabilities
-            )
+                and
 
-
-            prediction = model.classes_[
-                best_index
-            ]
-
-
-            confidence = float(
-                probabilities[
-                    best_index
-                ]
-            )
-
-
-            current_time = time.time()
-
-
-            with state.lock:
-
-                state.hand_detected = True
-
-                state.prediction = str(
-                    prediction
-                )
-
-                state.confidence = confidence
-
-
-                # --------------------------------------------
-                # STABILITY
-                # --------------------------------------------
-
-                if (
-                    state.stable_prediction
-                    == prediction
-                ):
-
-                    state.stable_count += 1
-
-                else:
-
-                    state.stable_prediction = prediction
-
-                    state.stable_count = 1
-
-
-                # --------------------------------------------
-                # RECORD LETTER
-                # --------------------------------------------
-
-                if (
-
-                    confidence
-                    >= CONFIDENCE_THRESHOLD
-
-                    and
-
-                    state.stable_count
-                    >= STABLE_FRAMES
-
-                    and
-
-                    state.last_recorded
-                    != prediction
-
-                    and
-
+                (
                     current_time
                     -
-                    state.last_record_time
-                    > 0.8
+                    shared["last_record_time"]
+                )
+                >= RECORD_COOLDOWN
 
-                ):
+            ):
 
-                    state.sentence += str(
-                        prediction
-                    )
+                shared["sentence"] += prediction
 
-                    state.last_recorded = str(
-                        prediction
-                    )
+                shared["last_recorded"] = prediction
 
-                    state.last_record_time = (
-                        current_time
-                    )
+                shared["last_record_time"] = current_time
 
 
-        else:
+        # ----------------------------------------------------
+        # DRAW VISUALIZATION
+        # ----------------------------------------------------
 
-            # ------------------------------------------------
-            # NO HAND
-            # ------------------------------------------------
+        output = draw_overlay(
 
-            with state.lock:
+            frame_array,
 
-                state.hand_detected = False
+            landmarks,
 
-                state.prediction = "-"
+            prediction,
 
-                state.confidence = 0.0
-
-                state.stable_prediction = None
-
-                state.stable_count = 0
-
-                # Allow another identical letter
-                # after removing hand from camera
-
-                state.last_recorded = None
-
-
-        return av.VideoFrame.from_ndarray(
-            np.array(image),
-            format="rgb24"
+            confidence
         )
+
+
+    return av.VideoFrame.from_ndarray(
+        output,
+        format="rgb24"
+    )
 
 
 # ============================================================
@@ -1197,9 +1201,10 @@ with st.sidebar:
         </div>
 
         <div class="brand-subtitle">
-            Computer Vision Sign Recognition
+            Intelligent Hand Sign Recognition
         </div>
         """,
+
         unsafe_allow_html=True
     )
 
@@ -1207,15 +1212,27 @@ with st.sidebar:
     st.markdown("---")
 
 
-    page = st.radio(
+    st.session_state.page = st.radio(
+
         "SYSTEM",
+
         [
             "Live Translator",
             "Dataset",
             "Model",
             "Computer Vision",
             "About"
-        ]
+        ],
+
+        index=[
+            "Live Translator",
+            "Dataset",
+            "Model",
+            "Computer Vision",
+            "About"
+        ].index(
+            st.session_state.page
+        )
     )
 
 
@@ -1223,7 +1240,7 @@ with st.sidebar:
 
 
     st.markdown(
-        "**RECOGNITION ENGINE**"
+        "**SYSTEM STATUS**"
     )
 
 
@@ -1233,11 +1250,11 @@ with st.sidebar:
 
 
     st.caption(
-        f"{len(classes)} hand-sign classes"
+        f"{len(classes)} classes available"
     )
 
     st.caption(
-        f"{len(X)} valid hand samples"
+        f"{len(X)} hand samples extracted"
     )
 
 
@@ -1245,12 +1262,12 @@ with st.sidebar:
 # LIVE TRANSLATOR
 # ============================================================
 
-if page == "Live Translator":
+if st.session_state.page == "Live Translator":
 
     st.markdown(
         """
         <div class="eyebrow">
-            REAL-TIME HAND VISION
+            REAL-TIME COMPUTER VISION
         </div>
 
         <div class="hero-title">
@@ -1258,70 +1275,71 @@ if page == "Live Translator":
         </div>
 
         <div class="hero-subtitle">
-            Show a hand sign to the camera.
-            SIGNOVA detects the hand, maps its 21 landmarks,
-            compares the hand structure with the dataset,
-            and records the predicted letter.
+            Translate hand signs into letters and numbers
+            using real-time hand landmark detection.
         </div>
         """,
+
         unsafe_allow_html=True
     )
 
 
-    # ========================================================
-    # SENTENCE BOX
-    # ========================================================
+    # --------------------------------------------------------
+    # SENTENCE
+    # --------------------------------------------------------
 
-    with state.lock:
+    with state_lock:
 
-        sentence = state.sentence
+        sentence = shared["sentence"]
 
-        prediction = state.prediction
+        prediction = shared["prediction"]
 
-        confidence = state.confidence
+        confidence = shared["confidence"]
 
-        hand_detected = state.hand_detected
+        hand_detected = shared["hand_detected"]
 
 
     if sentence:
 
-        sentence_content = sentence
+        sentence_html = sentence
 
         sentence_class = "sentence"
 
     else:
 
-        sentence_content = (
-            "Detected letters will appear here..."
+        sentence_html = (
+            "Your detected signs will appear here..."
         )
 
         sentence_class = "sentence empty"
 
 
     st.markdown(
+
         f"""
         <div class="sentence-box">
 
             <div class="sentence-label">
-                DETECTED SENTENCE
+                DETECTED SENTENCE / SEQUENCE
             </div>
 
             <div class="{sentence_class}">
-                {sentence_content}
+                {sentence_html}
             </div>
 
         </div>
         """,
+
         unsafe_allow_html=True
     )
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # BUTTONS
-    # ========================================================
+    # --------------------------------------------------------
 
     b1, b2, b3 = st.columns(
-        [1,1,4]
+        [1, 1, 4]
     )
 
 
@@ -1332,15 +1350,15 @@ if page == "Live Translator":
             use_container_width=True
         ):
 
-            with state.lock:
+            with state_lock:
 
-                state.sentence = ""
+                shared["sentence"] = ""
 
-                state.last_recorded = None
+                shared["last_recorded"] = None
 
-                state.stable_prediction = None
+                shared["stable_prediction"] = None
 
-                state.stable_count = 0
+                shared["stable_count"] = 0
 
 
             st.rerun()
@@ -1353,15 +1371,15 @@ if page == "Live Translator":
             use_container_width=True
         ):
 
-            with state.lock:
+            with state_lock:
 
-                if state.sentence:
+                if shared["sentence"]:
 
-                    state.sentence = (
-                        state.sentence[:-1]
+                    shared["sentence"] = (
+                        shared["sentence"][:-1]
                     )
 
-                    state.last_recorded = None
+                    shared["last_recorded"] = None
 
 
             st.rerun()
@@ -1370,34 +1388,41 @@ if page == "Live Translator":
     st.markdown("<br>", unsafe_allow_html=True)
 
 
-    # ========================================================
-    # CAMERA
-    # ========================================================
+    # --------------------------------------------------------
+    # CAMERA + PREDICTION
+    # --------------------------------------------------------
 
-    camera, result = st.columns(
+    camera_col, result_col = st.columns(
         [1.55, 1]
     )
 
 
-    with camera:
+    with camera_col:
 
         st.markdown(
             """
-            <div class="detection">
+            <div class="card">
 
-                🟢
-                <span class="detected">
-                HAND TRACKING ENABLED
-                </span>
+            <strong>LIVE HAND TRACKING</strong>
 
-                <br><br>
+            <br><br>
 
-                🔴 Points = hand landmarks<br>
-                ━ Lines = vectors / skeleton<br>
-                🟩 Green = detected hand region
+            🔴 <strong>Red points</strong> —
+            21 hand landmarks
+
+            <br>
+
+            ━ <strong>White lines</strong> —
+            hand vectors / edges
+
+            <br>
+
+            🟩 <strong>Green frame</strong> —
+            detected hand region
 
             </div>
             """,
+
             unsafe_allow_html=True
         )
 
@@ -1405,13 +1430,14 @@ if page == "Live Translator":
         st.markdown("<br>", unsafe_allow_html=True)
 
 
-        webrtc_streamer(
+        ctx = webrtc_streamer(
 
-            key="signova-hand-camera",
+            key="signova-camera",
 
             mode=WebRtcMode.SENDRECV,
 
-            video_processor_factory=SignovaProcessor,
+            video_frame_callback=
+                video_frame_callback,
 
             media_stream_constraints={
                 "video": True,
@@ -1422,43 +1448,41 @@ if page == "Live Translator":
         )
 
 
-    # ========================================================
-    # RESULT
-    # ========================================================
-
-    with result:
+    with result_col:
 
         if hand_detected:
 
-            detection_text = (
+            status = (
                 "🟢 HAND DETECTED"
             )
 
-            detection_class = (
-                "detected"
+            status_class = (
+                "status-online"
             )
 
         else:
 
-            detection_text = (
-                "○ NO HAND DETECTED"
+            status = (
+                "○ WAITING FOR HAND"
             )
 
-            detection_class = (
-                "not-detected"
+            status_class = (
+                "status-offline"
             )
 
 
         st.markdown(
-            f"""
-            <div class="detection">
 
-                <div class="{detection_class}">
-                    {detection_text}
+            f"""
+            <div class="card">
+
+                <div class="{status_class}">
+                    {status}
                 </div>
 
             </div>
             """,
+
             unsafe_allow_html=True
         )
 
@@ -1467,11 +1491,12 @@ if page == "Live Translator":
 
 
         st.markdown(
+
             f"""
             <div class="prediction">
 
                 <div class="prediction-label">
-                    PREDICTED LETTER
+                    CURRENT PREDICTION
                 </div>
 
                 <div class="letter">
@@ -1487,6 +1512,7 @@ if page == "Live Translator":
 
             </div>
             """,
+
             unsafe_allow_html=True
         )
 
@@ -1498,42 +1524,135 @@ if page == "Live Translator":
             """
             <div class="info">
 
-            <strong>How to create a sentence</strong>
+            <strong>How recording works</strong>
 
             <br><br>
 
-            Show one sign and keep your hand steady.
-            SIGNOVA waits until the same sign is stable
-            before adding it to the letter box.
+            Hold a sign steady until SIGNOVA confirms
+            the prediction.
 
             <br><br>
 
-            Remove your hand briefly before showing
-            the same letter again.
+            The same sign is recorded only once.
+
+            <br><br>
+
+            To enter the same sign again, briefly
+            remove your hand from the camera and
+            show the sign again.
 
             <br><br>
 
             Example:
 
+            <br>
+
+            <strong>
+            H → E → L → L → O
+            </strong>
+
             <br><br>
 
-            🤟 H → 🖐 E → 🤟 L → 🤟 L → 🤟 O
+            becomes:
 
-            <br><br>
+            <br>
 
-            Result:
-
-            <strong>HELLO</strong>
+            <strong>
+            HELLO
+            </strong>
 
             </div>
             """,
+
             unsafe_allow_html=True
         )
 
 
-    # ========================================================
+    # --------------------------------------------------------
+    # LIVE UPDATE LOOP
+    # --------------------------------------------------------
+
+    if ctx.state.playing:
+
+        placeholder = st.empty()
+
+        while ctx.state.playing:
+
+            with state_lock:
+
+                live_sentence = (
+                    shared["sentence"]
+                )
+
+                live_prediction = (
+                    shared["prediction"]
+                )
+
+                live_confidence = (
+                    shared["confidence"]
+                )
+
+                live_hand = (
+                    shared["hand_detected"]
+                )
+
+
+            if live_hand:
+
+                status_text = (
+                    "🟢 HAND DETECTED"
+                )
+
+            else:
+
+                status_text = (
+                    "○ WAITING FOR HAND"
+                )
+
+
+            placeholder.markdown(
+
+                f"""
+                <div class="card">
+
+                    <strong>
+                        {status_text}
+                    </strong>
+
+                    <br><br>
+
+                    Current sign:
+                    <strong>
+                        {live_prediction}
+                    </strong>
+
+                    &nbsp;&nbsp;
+
+                    Confidence:
+                    <strong>
+                        {live_confidence * 100:.1f}%
+                    </strong>
+
+                    <br><br>
+
+                    Sentence:
+                    <strong>
+                        {live_sentence if live_sentence else "—"}
+                    </strong>
+
+                </div>
+                """,
+
+                unsafe_allow_html=True
+            )
+
+
+            time.sleep(0.15)
+
+
+    # --------------------------------------------------------
     # METRICS
-    # ========================================================
+    # --------------------------------------------------------
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1544,6 +1663,7 @@ if page == "Live Translator":
     with m1:
 
         st.markdown(
+
             f"""
             <div class="metric">
 
@@ -1557,6 +1677,7 @@ if page == "Live Translator":
 
             </div>
             """,
+
             unsafe_allow_html=True
         )
 
@@ -1564,7 +1685,8 @@ if page == "Live Translator":
     with m2:
 
         st.markdown(
-            f"""
+
+            """
             <div class="metric">
 
                 <div class="metric-value">
@@ -1572,11 +1694,12 @@ if page == "Live Translator":
                 </div>
 
                 <div class="metric-label">
-                    HAND POINTS
+                    HAND LANDMARKS
                 </div>
 
             </div>
             """,
+
             unsafe_allow_html=True
         )
 
@@ -1584,6 +1707,29 @@ if page == "Live Translator":
     with m3:
 
         st.markdown(
+
+            f"""
+            <div class="metric">
+
+                <div class="metric-value">
+                    {len(X)}
+                </div>
+
+                <div class="metric-label">
+                    DATASET SAMPLES
+                </div>
+
+            </div>
+            """,
+
+            unsafe_allow_html=True
+        )
+
+
+    with m4:
+
+        st.markdown(
+
             f"""
             <div class="metric">
 
@@ -1597,26 +1743,7 @@ if page == "Live Translator":
 
             </div>
             """,
-            unsafe_allow_html=True
-        )
 
-
-    with m4:
-
-        st.markdown(
-            """
-            <div class="metric">
-
-                <div class="metric-value">
-                    KNN
-                </div>
-
-                <div class="metric-label">
-                    LANDMARK MODEL
-                </div>
-
-            </div>
-            """,
             unsafe_allow_html=True
         )
 
@@ -1625,52 +1752,49 @@ if page == "Live Translator":
 # DATASET PAGE
 # ============================================================
 
-elif page == "Dataset":
+elif st.session_state.page == "Dataset":
 
     st.markdown(
         """
         <div class="eyebrow">
-            TRAINING DATA
+            DATASET ANALYSIS
         </div>
 
         <div class="hero-title">
-            Dataset Explorer
+            SIGNOVA Dataset
         </div>
 
         <div class="hero-subtitle">
-            SIGNOVA extracts hand landmarks from the
-            supplied dataset and uses them to train
-            the recognition model.
+            The supplied dataset contains hand-sign images
+            representing digits and the English alphabet.
         </div>
         """,
+
         unsafe_allow_html=True
     )
 
 
-    c1, c2, c3 = st.columns(3)
+    a, b, c = st.columns(3)
 
 
-    with c1:
-
+    with a:
         st.metric(
             "Classes",
             len(classes)
         )
 
 
-    with c2:
-
+    with b:
         st.metric(
-            "Valid Samples",
-            len(X)
+            "Images",
+            900
         )
 
 
-    with c3:
-
+    with c:
         st.metric(
-            "Landmarks",
-            21
+            "Images / Class",
+            25
         )
 
 
@@ -1678,33 +1802,72 @@ elif page == "Dataset":
 
 
     st.subheader(
-        "Available Hand Signs"
+        "Digit Classes"
     )
 
 
-    cols = st.columns(5)
+    digit_cols = st.columns(10)
 
 
-    for i, class_name in enumerate(
-        classes
-    ):
+    for i in range(10):
 
-        with cols[i % 5]:
+        label = str(i)
+
+        with digit_cols[i]:
 
             st.markdown(
                 f"""
                 <div class="metric">
 
                     <div class="metric-value">
-                        {class_name}
+                        {label}
                     </div>
 
                     <div class="metric-label">
-                        HAND SIGN
+                        DIGIT
                     </div>
 
                 </div>
                 """,
+
+                unsafe_allow_html=True
+            )
+
+
+    st.markdown("<br>")
+
+
+    st.subheader(
+        "Alphabet Classes"
+    )
+
+
+    alphabet_cols = st.columns(6)
+
+
+    for i in range(26):
+
+        label = chr(
+            ord("A") + i
+        )
+
+        with alphabet_cols[i % 6]:
+
+            st.markdown(
+                f"""
+                <div class="metric">
+
+                    <div class="metric-value">
+                        {label}
+                    </div>
+
+                    <div class="metric-label">
+                        LETTER
+                    </div>
+
+                </div>
+                """,
+
                 unsafe_allow_html=True
             )
 
@@ -1713,7 +1876,7 @@ elif page == "Dataset":
 # MODEL PAGE
 # ============================================================
 
-elif page == "Model":
+elif st.session_state.page == "Model":
 
     st.markdown(
         """
@@ -1726,10 +1889,11 @@ elif page == "Model":
         </div>
 
         <div class="hero-subtitle">
-            The classifier compares normalized hand
-            landmarks rather than raw image pixels.
+            SIGNOVA represents each hand using normalized
+            landmark coordinates and hand vectors.
         </div>
         """,
+
         unsafe_allow_html=True
     )
 
@@ -1740,8 +1904,8 @@ elif page == "Model":
     with a:
 
         st.metric(
-            "Accuracy",
-            f"{accuracy * 100:.2f}%"
+            "Classifier",
+            "KNN"
         )
 
 
@@ -1768,16 +1932,18 @@ elif page == "Model":
         """
         <div class="info">
 
-        <strong>Why landmarks?</strong>
+        <strong>Feature extraction</strong>
 
         <br><br>
 
-        Instead of comparing the complete image, SIGNOVA
-        represents the hand using 21 landmark points.
-
-        Each point contains:
+        Every detected hand is represented using
+        21 landmark points.
 
         <br><br>
+
+        Each landmark contains:
+
+        <br>
 
         • X coordinate<br>
         • Y coordinate<br>
@@ -1785,12 +1951,23 @@ elif page == "Model":
 
         <br>
 
-        SIGNOVA also calculates vectors between connected
-        landmarks. This allows the system to describe the
-        shape and orientation of the hand.
+        SIGNOVA then calculates vectors between
+        connected hand landmarks.
+
+        <br><br>
+
+        The coordinates are translated relative
+        to the wrist and scale-normalised.
+
+        <br><br>
+
+        This produces a feature representation
+        that is less dependent on where the hand
+        appears in the camera.
 
         </div>
         """,
+
         unsafe_allow_html=True
     )
 
@@ -1804,25 +1981,34 @@ elif page == "Model":
 
 
     pipeline = [
-        "Camera Frame",
+
+        "Webcam Frame",
+
         "Hand Detection",
-        "21 Landmark Points",
+
+        "21 Landmark Extraction",
+
         "Coordinate Normalisation",
-        "Vector Extraction",
+
+        "Vector / Edge Extraction",
+
         "KNN Classification",
-        "Confidence Score",
-        "Stable Sign",
-        "Sentence Builder"
+
+        "Confidence Evaluation",
+
+        "Stable Sign Verification",
+
+        "Sentence Construction"
     ]
 
 
-    for i, step in enumerate(
+    for number, step in enumerate(
         pipeline,
         1
     ):
 
         st.write(
-            f"**{i}.** {step}"
+            f"**{number}.** {step}"
         )
 
 
@@ -1830,7 +2016,7 @@ elif page == "Model":
 # COMPUTER VISION PAGE
 # ============================================================
 
-elif page == "Computer Vision":
+elif st.session_state.page == "Computer Vision":
 
     st.markdown(
         """
@@ -1843,10 +2029,11 @@ elif page == "Computer Vision":
         </div>
 
         <div class="hero-subtitle">
-            Visual representation of the features
-            SIGNOVA uses to recognize a hand.
+            Visual features used by SIGNOVA to
+            understand hand structure.
         </div>
         """,
+
         unsafe_allow_html=True
     )
 
@@ -1855,58 +2042,63 @@ elif page == "Computer Vision":
         """
         <div class="info">
 
-        <strong>🔴 Landmark Points</strong>
-
-        <br>
-
-        SIGNOVA detects 21 key points on the hand.
-        These represent important joints such as the
-        wrist and finger joints.
+        <strong>🔴 RED POINTS — LANDMARKS</strong>
 
         <br><br>
 
-        <strong>━ Edges / Vectors</strong>
-
-        <br>
-
-        Lines connect related landmarks. These vectors
-        describe the direction and structure of each
-        finger.
+        SIGNOVA detects 21 important locations
+        on the hand.
 
         <br><br>
 
-        <strong>🟩 Detection Frame</strong>
-
-        <br>
-
-        The green rectangle represents the region
-        containing the detected hand.
+        These points represent the wrist,
+        finger joints and fingertips.
 
         <br><br>
 
-        <strong>Feature Comparison</strong>
+        <strong>━ WHITE LINES — VECTORS</strong>
 
-        <br>
+        <br><br>
 
-        The landmark coordinates and vectors are
-        normalized before being compared with the
-        hand-sign samples extracted from the dataset.
+        Lines connect the landmarks and represent
+        the structure and direction of the fingers.
+
+        <br><br>
+
+        <strong>🟩 GREEN FRAME — HAND DETECTION</strong>
+
+        <br><br>
+
+        The green frame appears around the detected
+        hand.
+
+        <br><br>
+
+        <strong>MODEL COMPARISON</strong>
+
+        <br><br>
+
+        The camera hand is converted into numerical
+        features and compared with the landmark
+        features extracted from the supplied
+        900-image dataset.
 
         </div>
         """,
+
         unsafe_allow_html=True
     )
 
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<br>")
 
 
     st.subheader(
-        "21 Hand Landmarks"
+        "21 Landmark Structure"
     )
 
 
-    landmark_names = [
+    landmarks = [
 
         "0 — Wrist",
 
@@ -1952,17 +2144,17 @@ elif page == "Computer Vision":
     ]
 
 
-    cols = st.columns(3)
+    columns = st.columns(3)
 
 
-    for i, name in enumerate(
-        landmark_names
+    for i, item in enumerate(
+        landmarks
     ):
 
-        with cols[i % 3]:
+        with columns[i % 3]:
 
             st.write(
-                f"🔴 {name}"
+                f"🔴 {item}"
             )
 
 
@@ -1970,7 +2162,7 @@ elif page == "Computer Vision":
 # ABOUT
 # ============================================================
 
-elif page == "About":
+elif st.session_state.page == "About":
 
     st.markdown(
         """
@@ -1987,6 +2179,7 @@ elif page == "About":
             computer vision and machine learning.
         </div>
         """,
+
         unsafe_allow_html=True
     )
 
@@ -1995,23 +2188,45 @@ elif page == "About":
         """
         <div class="info">
 
-        SIGNOVA is an Image Processing and Computer Vision
-        project designed to recognize static hand signs
-        through a webcam.
+        SIGNOVA is an Image Processing and Computer
+        Vision system designed to recognize static
+        hand signs through a webcam.
 
         <br><br>
 
-        The system detects the user's hand, extracts
-        21 landmark points, calculates hand vectors,
-        compares the resulting features with the supplied
-        dataset, and predicts the corresponding sign.
+        The system uses the supplied dataset containing
+        36 classes:
 
         <br><br>
 
-        The predicted signs can then be accumulated into
-        a sentence in real time.
+        <strong>
+        0–9 and A–Z
+        </strong>
+
+        <br><br>
+
+        For each image, SIGNOVA detects the hand
+        and extracts 21 landmarks.
+
+        <br><br>
+
+        The landmarks are normalized and combined
+        with hand vectors to form a feature
+        representation.
+
+        <br><br>
+
+        A K-Nearest Neighbors classifier is then
+        used to identify the closest hand-sign
+        patterns.
+
+        <br><br>
+
+        In real time, the recognized signs can be
+        accumulated into a sentence or sequence.
 
         </div>
         """,
+
         unsafe_allow_html=True
     )

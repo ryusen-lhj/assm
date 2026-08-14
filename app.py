@@ -1,3136 +1,375 @@
+import json
 import os
-import time
-import threading
 import zipfile
-from collections import deque
 
-import streamlit as st
-
-# ============================================================
-# OPENCV DEPLOYMENT DIAGNOSTIC
-# ============================================================
-
-try:
-    import cv2
-
-except Exception as error:
-    st.error("OpenCV failed to load.")
-    st.code(
-        f"""
-Exception type:
-{type(error).__name__}
-
-Full error:
-{repr(error)}
-
-Message:
-{str(error)}
-"""
-    )
-    st.stop()
-
-
-# ============================================================
-# MEDIAPIPE DIAGNOSTIC
-# ============================================================
-
-try:
-    import mediapipe as mp
-
-except Exception as error:
-    st.error("MediaPipe failed to load.")
-    st.code(
-        f"""
-Exception type:
-{type(error).__name__}
-
-Full error:
-{repr(error)}
-
-Message:
-{str(error)}
-"""
-    )
-    st.stop()
-
-
-# ============================================================
-# OTHER IMPORTS
-# ============================================================
-
-import av
+import mediapipe as mp
 import numpy as np
-
-from PIL import Image, ImageDraw
-
+import streamlit as st
+import streamlit.components.v1 as components
+from PIL import Image
 from sklearn.metrics import accuracy_score
-from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 
-from streamlit_webrtc import (
-    WebRtcMode,
-    webrtc_streamer
-)
-# ============================================================
-# SIGNOVA CONFIG
-# ============================================================
-st.set_page_config(
-    page_title="SIGNOVA",
-    page_icon="🤟",
-    layout="wide"
-)
+st.set_page_config(page_title="SIGNOVA", page_icon="🤟", layout="wide")
 
-ZIP_NAMES = [
-    "archive.zip",
-    "archive(1).zip"
-]
-
+ZIP_NAMES = ["archive.zip", "archive(1).zip"]
 EXTRACT_DIR = "signova_dataset"
-
-CLASSES = (
-    [str(i) for i in range(10)]
-    +
-    list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-)
-
-IMAGES_PER_CLASS = 25
+CLASSES = [str(i) for i in range(10)] + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 TOTAL_IMAGES = 900
+IMAGES_PER_CLASS = 25
 
-CONFIDENCE_THRESHOLD = 0.65
-STABLE_FRAMES = 8
-RECORD_COOLDOWN = 0.70
-NO_HAND_REARM_FRAMES = 4
-TRAJECTORY_LENGTH = 18
+HAND_CONNECTIONS = [
+    (0,1),(1,2),(2,3),(3,4),
+    (0,5),(5,6),(6,7),(7,8),
+    (0,9),(9,10),(10,11),(11,12),
+    (0,13),(13,14),(14,15),(15,16),
+    (0,17),(17,18),(18,19),(19,20),
+    (5,9),(9,13),(13,17),
+]
 
 mp_hands = mp.solutions.hands
 
-
-# ============================================================
-# HAND CONNECTIONS
-# ============================================================
-
-HAND_CONNECTIONS = [
-
-    # Thumb
-    (0, 1),
-    (1, 2),
-    (2, 3),
-    (3, 4),
-
-    # Index
-    (0, 5),
-    (5, 6),
-    (6, 7),
-    (7, 8),
-
-    # Middle
-    (0, 9),
-    (9, 10),
-    (10, 11),
-    (11, 12),
-
-    # Ring
-    (0, 13),
-    (13, 14),
-    (14, 15),
-    (15, 16),
-
-    # Pinky
-    (0, 17),
-    (17, 18),
-    (18, 19),
-    (19, 20),
-
-    # Palm
-    (5, 9),
-    (9, 13),
-    (13, 17)
-]
-
-
-# ============================================================
-# UI
-# ============================================================
-
-st.markdown(
-    """
+st.markdown("""
 <style>
-
 .stApp {
-
     background:
-        radial-gradient(
-            circle at 10% 5%,
-            rgba(124,58,237,.18),
-            transparent 28%
-        ),
-        radial-gradient(
-            circle at 90% 15%,
-            rgba(14,165,233,.12),
-            transparent 28%
-        ),
-        #070a12;
-
+      radial-gradient(circle at 10% 5%, rgba(124,58,237,.16), transparent 30%),
+      radial-gradient(circle at 90% 10%, rgba(14,165,233,.10), transparent 30%),
+      #070a12;
     color: #f8fafc;
 }
-
-
-[data-testid="stHeader"] {
-
-    background: transparent;
-}
-
-
 [data-testid="stSidebar"] {
-
     background: #0b0f1a;
-
-    border-right:
-        1px solid rgba(255,255,255,.07);
+    border-right: 1px solid rgba(255,255,255,.07);
 }
-
-
-#MainMenu,
-footer {
-
-    visibility: hidden;
-}
-
-
-.brand {
-
-    font-size: 28px;
-
-    font-weight: 900;
-}
-
-
-.muted {
-
-    color: #64748b;
-
-    font-size: 12px;
-}
-
-
-.eyebrow {
-
-    color: #818cf8;
-
-    font-size: 11px;
-
-    font-weight: 900;
-
-    letter-spacing: 2px;
-
-    text-transform: uppercase;
-}
-
-
-.hero {
-
-    font-size: 52px;
-
-    font-weight: 950;
-
-    letter-spacing: -2px;
-
-    background:
-        linear-gradient(
-            90deg,
-            #fff,
-            #c4b5fd,
-            #7dd3fc
-        );
-
-    -webkit-background-clip: text;
-
-    -webkit-text-fill-color: transparent;
-}
-
-
-.subtitle {
-
-    color: #94a3b8;
-
-    line-height: 1.7;
-
-    max-width: 820px;
-}
-
-
+.hero {font-size:50px;font-weight:950;letter-spacing:-2px;}
+.sub {color:#94a3b8;line-height:1.7;max-width:900px;}
 .card {
-
-    padding: 18px;
-
-    border-radius: 18px;
-
-    background:
-        rgba(15,23,42,.78);
-
-    border:
-        1px solid rgba(255,255,255,.07);
+    background:rgba(15,23,42,.78);
+    border:1px solid rgba(255,255,255,.08);
+    border-radius:18px;
+    padding:18px;
 }
-
-
-.sentence {
-
-    margin: 18px 0;
-
-    padding: 22px 25px;
-
-    min-height: 105px;
-
-    border-radius: 20px;
-
-    background:
-        linear-gradient(
-            145deg,
-            rgba(124,58,237,.16),
-            rgba(37,99,235,.08)
-        );
-
-    border:
-        1px solid rgba(139,92,246,.30);
-}
-
-
-.slabel {
-
-    color: #818cf8;
-
-    font-size: 10px;
-
-    font-weight: 900;
-
-    letter-spacing: 2px;
-}
-
-
-.stext {
-
-    font-size: 36px;
-
-    font-weight: 900;
-
-    letter-spacing: 5px;
-
-    margin-top: 8px;
-
-    word-break: break-word;
-}
-
-
-.empty {
-
-    color: #475569;
-
-    font-size: 16px;
-
-    letter-spacing: 0;
-
-    font-weight: 500;
-}
-
-
-.good {
-
-    color: #4ade80;
-
-    font-weight: 900;
-}
-
-
-.wait {
-
-    color: #64748b;
-
-    font-weight: 900;
-}
-
-
-.info {
-
-    background:
-        rgba(99,102,241,.07);
-
-    border-left:
-        3px solid #6366f1;
-
-    border-radius: 9px;
-
-    padding: 17px;
-
-    color: #cbd5e1;
-
-    line-height: 1.8;
-
-    font-size: 13px;
-}
-
-
-.pred {
-
-    padding: 24px;
-
-    text-align: center;
-
-    border-radius: 20px;
-
-    background:
-        rgba(15,23,42,.82);
-
-    border:
-        1px solid rgba(255,255,255,.08);
-}
-
-
-.pletter {
-
-    font-size: 96px;
-
-    font-weight: 950;
-
-    background:
-        linear-gradient(
-            135deg,
-            #c4b5fd,
-            #60a5fa
-        );
-
-    -webkit-background-clip: text;
-
-    -webkit-text-fill-color: transparent;
-}
-
-
-.metricbox {
-
-    padding: 16px;
-
-    border-radius: 16px;
-
-    background:
-        rgba(15,23,42,.76);
-
-    border:
-        1px solid rgba(255,255,255,.07);
-}
-
-
-.mvalue {
-
-    font-size: 27px;
-
-    font-weight: 900;
-}
-
-
-.mlabel {
-
-    color: #64748b;
-
-    font-size: 10px;
-
-    font-weight: 800;
-
-    text-transform: uppercase;
-
-    letter-spacing: 1px;
-}
-
 </style>
-""",
-    unsafe_allow_html=True
-)
+""", unsafe_allow_html=True)
 
-
-# ============================================================
-# UI HELPERS
-# ============================================================
-
-def hero(
-    eyebrow,
-    title,
-    subtitle
-):
-
-    st.markdown(
-        f"""
-        <div class="eyebrow">
-            {eyebrow}
-        </div>
-
-        <div class="hero">
-            {title}
-        </div>
-
-        <div class="subtitle">
-            {subtitle}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-def metric_card(
-    column,
-    value,
-    label
-):
-
-    with column:
-
-        st.markdown(
-            f"""
-            <div class="metricbox">
-
-                <div class="mvalue">
-                    {value}
-                </div>
-
-                <div class="mlabel">
-                    {label}
-                </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-
-# ============================================================
-# DATASET HELPERS
-# ============================================================
+def hero(title, subtitle):
+    st.markdown(f'<div class="hero">{title}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sub">{subtitle}</div>', unsafe_allow_html=True)
 
 def find_zip():
-
     for name in ZIP_NAMES:
-
         if os.path.exists(name):
-
             return name
-
     return None
-
 
 def locate_dataset():
-
-    if not os.path.exists(
-        EXTRACT_DIR
-    ):
-
-        return None
-
-
-    direct = os.path.join(
-        EXTRACT_DIR,
-        "DATASET"
-    )
-
-
-    if os.path.isdir(
-        direct
-    ):
-
+    direct = os.path.join(EXTRACT_DIR, "DATASET")
+    if os.path.isdir(direct):
         return direct
-
-
-    for root, _, _ in os.walk(
-        EXTRACT_DIR
-    ):
-
-        if os.path.basename(
-            root
-        ).upper() == "DATASET":
-
+    if not os.path.isdir(EXTRACT_DIR):
+        return None
+    for root, _, _ in os.walk(EXTRACT_DIR):
+        if os.path.basename(root).upper() == "DATASET":
             return root
-
-
     return None
 
-
 def prepare_dataset():
-
     existing = locate_dataset()
-
-
     if existing:
-
         return existing
-
-
     zip_name = find_zip()
-
-
     if not zip_name:
-
-        st.error(
-            """
-            Put archive.zip in the same
-            GitHub repository as app.py.
-            """
-        )
-
+        st.error("archive.zip is missing from the repository.")
         st.stop()
-
-
-    os.makedirs(
-        EXTRACT_DIR,
-        exist_ok=True
-    )
-
-
+    os.makedirs(EXTRACT_DIR, exist_ok=True)
     try:
-
-        with zipfile.ZipFile(
-            zip_name,
-            "r"
-        ) as archive:
-
-            archive.extractall(
-                EXTRACT_DIR
-            )
-
-
+        with zipfile.ZipFile(zip_name, "r") as archive:
+            archive.extractall(EXTRACT_DIR)
     except zipfile.BadZipFile:
-
-        st.error(
-            "The dataset ZIP is invalid or corrupted."
-        )
-
+        st.error("archive.zip is invalid.")
         st.stop()
-
-
     dataset = locate_dataset()
-
-
     if not dataset:
-
-        st.error(
-            """
-            Could not find DATASET/
-            inside archive.zip.
-            """
-        )
-
+        st.error("Could not find DATASET/<class>/... inside archive.zip.")
         st.stop()
-
-
     return dataset
 
-
-# ============================================================
-# FEATURE EXTRACTION
-# ============================================================
-
-def features_from_landmarks(
-    landmarks
-):
-
-    points = np.asarray(
-        [
-            [
-                p.x,
-                p.y,
-                p.z
-            ]
-            for p in landmarks
-        ],
-        dtype=np.float32
-    )
-
-
-    # --------------------------------------------------------
-    # WRIST RELATIVE
-    # --------------------------------------------------------
-
-    points -= points[
-        0
-    ].copy()
-
-
-    # --------------------------------------------------------
-    # SCALE NORMALIZATION
-    # --------------------------------------------------------
-
-    scale = float(
-        np.max(
-            np.linalg.norm(
-                points[:, :2],
-                axis=1
-            )
-        )
-    )
-
-
+def features_from_landmarks(landmarks):
+    pts = np.asarray([[p.x, p.y] for p in landmarks], dtype=np.float32)
+    pts -= pts[0].copy()
+    scale = float(np.max(np.linalg.norm(pts, axis=1)))
     if scale > 1e-6:
-
-        points /= scale
-
-
-    # --------------------------------------------------------
-    # MIRROR NORMALIZATION
-    # --------------------------------------------------------
-
-    if points[5, 0] > points[17, 0]:
-
-        points[:, 0] *= -1
-
-
-    # --------------------------------------------------------
-    # VECTOR FEATURES
-    # --------------------------------------------------------
-
+        pts /= scale
+    if pts[5, 0] > pts[17, 0]:
+        pts[:, 0] *= -1.0
+    axis = pts[9]
+    angle = np.arctan2(axis[1], axis[0]) - (-np.pi / 2.0)
+    c, s = np.cos(-angle), np.sin(-angle)
+    rot = np.asarray([[c, -s], [s, c]], dtype=np.float32)
+    pts = pts @ rot.T
     vectors = []
-
-
+    lengths = []
     for a, b in HAND_CONNECTIONS:
-
-        vector = (
-            points[b]
-            -
-            points[a]
-        )
-
-        vectors.extend(
-            vector.tolist()
-        )
-
-
-    # --------------------------------------------------------
-    # DISTANCE FEATURES
-    # --------------------------------------------------------
-
-    fingertips = [
-        4,
-        8,
-        12,
-        16,
-        20
+        v = pts[b] - pts[a]
+        vectors.extend(v.tolist())
+        lengths.append(float(np.linalg.norm(v)))
+    angle_triples = [
+        (1,2,3),(2,3,4),(5,6,7),(6,7,8),(9,10,11),
+        (10,11,12),(13,14,15),(14,15,16),(17,18,19),(18,19,20),
     ]
+    angles = []
+    for a, b, cidx in angle_triples:
+        u = pts[a] - pts[b]
+        v = pts[cidx] - pts[b]
+        denom = float(np.linalg.norm(u) * np.linalg.norm(v))
+        if denom < 1e-7:
+            angles.append(0.0)
+        else:
+            cosine = float(np.clip(np.dot(u, v) / denom, -1.0, 1.0))
+            angles.append(float(np.arccos(cosine) / np.pi))
+    tips = [4, 8, 12, 16, 20]
+    distances = [float(np.linalg.norm(pts[t])) for t in tips]
+    for i in range(len(tips)):
+        for j in range(i + 1, len(tips)):
+            distances.append(float(np.linalg.norm(pts[tips[i]] - pts[tips[j]])))
+    return np.concatenate([
+        pts.flatten(),
+        np.asarray(vectors, dtype=np.float32),
+        np.asarray(lengths, dtype=np.float32),
+        np.asarray(angles, dtype=np.float32),
+        np.asarray(distances, dtype=np.float32),
+    ]).astype(np.float32)
 
-
-    distances = []
-
-
-    for tip in fingertips:
-
-        distance = np.linalg.norm(
-            points[
-                tip,
-                :2
-            ]
-        )
-
-        distances.append(
-            float(distance)
-        )
-
-
-    for i in range(4):
-
-        first = points[
-            fingertips[i],
-            :2
-        ]
-
-        second = points[
-            fingertips[i + 1],
-            :2
-        ]
-
-
-        distance = np.linalg.norm(
-            first
-            -
-            second
-        )
-
-
-        distances.append(
-            float(distance)
-        )
-
-
-    # --------------------------------------------------------
-    # FINAL FEATURE VECTOR
-    # --------------------------------------------------------
-
-    return np.concatenate(
-        [
-            points.flatten(),
-
-            np.asarray(
-                vectors,
-                dtype=np.float32
-            ),
-
-            np.asarray(
-                distances,
-                dtype=np.float32
-            )
-        ]
-    ).astype(
-        np.float32
-    )
-
-
-# ============================================================
-# EXTRACT LANDMARKS FROM DATASET
-# ============================================================
-
-@st.cache_data(
-    show_spinner=False
-)
-def load_dataset_landmarks(
-    dataset_path
-):
-
-    X = []
-    y = []
-
-
-    detected = {
-
-        label: 0
-
-        for label in CLASSES
-    }
-
-
-    failed = {
-
-        label: 0
-
-        for label in CLASSES
-    }
-
-
+@st.cache_data(show_spinner=False)
+def load_dataset_landmarks(dataset_path):
+    X, y = [], []
+    detected = {label: 0 for label in CLASSES}
+    failed = {label: 0 for label in CLASSES}
     with mp_hands.Hands(
-
         static_image_mode=True,
-
         max_num_hands=1,
-
         model_complexity=1,
-
-        min_detection_confidence=0.35
-
+        min_detection_confidence=0.35,
     ) as detector:
-
-
         for label in CLASSES:
-
-            folder = os.path.join(
-                dataset_path,
-                label
-            )
-
-
-            if not os.path.isdir(
-                folder
-            ):
-
+            folder = os.path.join(dataset_path, label)
+            if not os.path.isdir(folder):
                 continue
-
-
             files = sorted(
-                [
-                    f
-                    for f in os.listdir(
-                        folder
-                    )
-                    if f.lower().endswith(
-                        (
-                            ".jpg",
-                            ".jpeg",
-                            ".png"
-                        )
-                    )
-                ]
+                f for f in os.listdir(folder)
+                if f.lower().endswith((".jpg", ".jpeg", ".png"))
             )
-
-
             for filename in files:
-
                 try:
-
-                    image = Image.open(
-                        os.path.join(
-                            folder,
-                            filename
-                        )
-                    ).convert(
-                        "RGB"
-                    )
-
-
-                    result = detector.process(
-                        np.asarray(
-                            image
-                        )
-                    )
-
-
+                    img = Image.open(os.path.join(folder, filename)).convert("RGB")
+                    result = detector.process(np.asarray(img))
                     if not result.multi_hand_landmarks:
-
-                        failed[
-                            label
-                        ] += 1
-
+                        failed[label] += 1
                         continue
-
-
-                    landmarks = (
-                        result
-                        .multi_hand_landmarks[0]
-                        .landmark
-                    )
-
-
-                    X.append(
-                        features_from_landmarks(
-                            landmarks
-                        )
-                    )
-
-
-                    y.append(
-                        label
-                    )
-
-
-                    detected[
-                        label
-                    ] += 1
-
-
+                    lm = result.multi_hand_landmarks[0].landmark
+                    X.append(features_from_landmarks(lm))
+                    y.append(label)
+                    detected[label] += 1
                 except Exception:
+                    failed[label] += 1
+    return np.asarray(X, dtype=np.float32), np.asarray(y), detected, failed
 
-                    failed[
-                        label
-                    ] += 1
-
-
-    return (
-
-        np.asarray(
-            X,
-            dtype=np.float32
-        ),
-
-        np.asarray(
-            y
-        ),
-
-        detected,
-
-        failed
-    )
-
-
-# ============================================================
-# SAFE TRAINING
-# ============================================================
-
-@st.cache_resource(
-    show_spinner=False
-)
-def train_classifier(
-    X,
-    y
-):
-
-    X = np.asarray(
-        X,
-        dtype=np.float32
-    )
-
-
-    y = np.asarray(
-        y
-    )
-
-
+@st.cache_resource(show_spinner=False)
+def train_eval_model(X, y):
     if len(X) == 0:
-
-        raise ValueError(
-            "No usable landmark samples were extracted."
-        )
-
-
-    # ========================================================
-    # LIVE MODEL
-    #
-    # Train using ALL usable samples.
-    # ========================================================
-
-    live_model = Pipeline(
-        [
-            (
-                "scaler",
-                StandardScaler()
-            ),
-
-            (
-                "knn",
-
-                KNeighborsClassifier(
-
-                    n_neighbors=max(
-                        1,
-                        min(
-                            5,
-                            len(X)
-                        )
-                    ),
-
-                    weights="distance"
-                )
-            )
-        ]
-    )
-
-
-    live_model.fit(
-        X,
-        y
-    )
-
-
-    # ========================================================
-    # SAFE EVALUATION
-    # ========================================================
-
-    unique, counts = np.unique(
-        y,
-        return_counts=True
-    )
-
-
-    eligible = unique[
-        counts >= 2
-    ]
-
-
-    if len(
-        eligible
-    ) < 2:
-
-        return (
-
-            live_model,
-
-            None,
-
-            len(X),
-
-            0,
-
-            eligible.tolist()
-        )
-
-
-    mask = np.isin(
-        y,
-        eligible
-    )
-
-
-    Xe = X[
-        mask
-    ]
-
-
-    ye = y[
-        mask
-    ]
-
-
-    rng = np.random.default_rng(
-        42
-    )
-
-
-    train_idx = []
-
-    test_idx = []
-
-
-    # --------------------------------------------------------
-    # MANUAL BALANCED SPLIT
-    # --------------------------------------------------------
-
+        raise ValueError("No usable landmark samples.")
+    model = Pipeline([
+        ("scaler", StandardScaler()),
+        ("svm", SVC(kernel="rbf", C=8.0, gamma="scale", probability=True,
+                    class_weight="balanced", random_state=42)),
+    ])
+    model.fit(X, y)
+    unique, counts = np.unique(y, return_counts=True)
+    eligible = unique[counts >= 2]
+    if len(eligible) < 2:
+        return model, None, 0
+    rng = np.random.default_rng(42)
+    train_idx, test_idx = [], []
     for label in eligible:
+        idx = np.where(y == label)[0].copy()
+        rng.shuffle(idx)
+        n_test = min(max(1, int(round(len(idx) * 0.2))), len(idx) - 1)
+        test_idx.extend(idx[:n_test])
+        train_idx.extend(idx[n_test:])
+    if not train_idx or not test_idx:
+        return model, None, 0
+    train_idx = np.asarray(train_idx, dtype=int)
+    test_idx = np.asarray(test_idx, dtype=int)
+    eval_model = Pipeline([
+        ("scaler", StandardScaler()),
+        ("svm", SVC(kernel="rbf", C=8.0, gamma="scale", probability=False,
+                    class_weight="balanced", random_state=42)),
+    ])
+    eval_model.fit(X[train_idx], y[train_idx])
+    pred = eval_model.predict(X[test_idx])
+    return model, float(accuracy_score(y[test_idx], pred)), len(test_idx)
 
-        idx = np.where(
-            ye == label
-        )[0]
+@st.cache_data(show_spinner=False)
+def browser_training_payload(X, y):
+    mean = X.mean(axis=0)
+    std = X.std(axis=0)
+    std[std < 1e-6] = 1.0
+    Z = (X - mean) / std
+    return {
+        "mean": np.round(mean, 6).tolist(),
+        "std": np.round(std, 6).tolist(),
+        "x": np.round(Z, 5).tolist(),
+        "y": y.tolist(),
+    }
 
-
-        rng.shuffle(
-            idx
-        )
-
-
-        n_test = max(
-            1,
-            int(
-                round(
-                    len(idx)
-                    *
-                    0.20
-                )
-            )
-        )
-
-
-        n_test = min(
-            n_test,
-            len(idx) - 1
-        )
-
-
-        test_idx.extend(
-            idx[
-                :n_test
-            ]
-        )
-
-
-        train_idx.extend(
-            idx[
-                n_test:
-            ]
-        )
-
-
-    train_idx = np.asarray(
-        train_idx,
-        dtype=int
-    )
-
-
-    test_idx = np.asarray(
-        test_idx,
-        dtype=int
-    )
-
-
-    if (
-        not len(train_idx)
-        or
-        not len(test_idx)
-    ):
-
-        return (
-
-            live_model,
-
-            None,
-
-            len(X),
-
-            0,
-
-            eligible.tolist()
-        )
-
-
-    X_train = Xe[
-        train_idx
-    ]
-
-    y_train = ye[
-        train_idx
-    ]
-
-
-    X_test = Xe[
-        test_idx
-    ]
-
-    y_test = ye[
-        test_idx
-    ]
-
-
-    eval_model = Pipeline(
-        [
-            (
-                "scaler",
-                StandardScaler()
-            ),
-
-            (
-                "knn",
-
-                KNeighborsClassifier(
-
-                    n_neighbors=max(
-                        1,
-                        min(
-                            5,
-                            len(X_train)
-                        )
-                    ),
-
-                    weights="distance"
-                )
-            )
-        ]
-    )
-
-
-    eval_model.fit(
-        X_train,
-        y_train
-    )
-
-
-    predictions = eval_model.predict(
-        X_test
-    )
-
-
-    accuracy = accuracy_score(
-        y_test,
-        predictions
-    )
-
-
-    return (
-
-        live_model,
-
-        float(
-            accuracy
-        ),
-
-        len(
-            X_train
-        ),
-
-        len(
-            X_test
-        ),
-
-        eligible.tolist()
-    )
-
-
-# ============================================================
-# INITIALIZE DATA
-# ============================================================
+def browser_camera_component(payload):
+    training_json = json.dumps(payload, separators=(",", ":"))
+    connections_json = json.dumps(HAND_CONNECTIONS, separators=(",", ":"))
+    html = r"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { box-sizing:border-box; }
+body { margin:0; padding:0; background:#070a12; color:#f8fafc; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+.shell { border:1px solid rgba(255,255,255,.09); border-radius:18px; background:rgba(15,23,42,.84); padding:16px; }
+.top { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+button { border:0; border-radius:10px; padding:10px 16px; font-weight:800; background:#4f46e5; color:#fff; cursor:pointer; }
+button.secondary { background:#1e293b; }
+button.danger { background:#7f1d1d; }
+.status { color:#94a3b8; font-size:13px; }
+.sequence { margin:10px 0 14px; padding:14px 16px; border-radius:14px; background:#0b1220; border:1px solid rgba(129,140,248,.25); }
+.sequence .label { color:#818cf8; font-size:10px; letter-spacing:1.5px; font-weight:900; }
+.sequence .text { font-size:28px; font-weight:900; letter-spacing:3px; min-height:38px; }
+.wrap { position:relative; width:100%; max-width:760px; margin:auto; }
+video { display:none; }
+canvas { width:100%; border-radius:14px; background:#020617; display:block; }
+.metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
+.metric { background:#0b1220; border-radius:12px; padding:12px; border:1px solid rgba(255,255,255,.06); }
+.metric b { font-size:22px; display:block; }
+.metric span { color:#94a3b8; font-size:11px; }
+.note { margin-top:10px; color:#94a3b8; font-size:12px; line-height:1.5; }
+.good { color:#4ade80; }
+.bad { color:#fb7185; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+<div class="shell">
+  <div class="top">
+    <button id="startBtn">▶ START CAMERA</button>
+    <button id="clearBtn" class="danger">Clear</button>
+    <button id="deleteBtn" class="secondary">Delete</button>
+    <button id="spaceBtn" class="secondary">Space</button>
+    <span id="status" class="status">Camera stopped.</span>
+  </div>
+  <div class="sequence"><div class="label">DETECTED SEQUENCE</div><div id="sequence" class="text">—</div></div>
+  <div class="wrap"><video id="video" playsinline muted></video><canvas id="canvas" width="640" height="480"></canvas></div>
+  <div class="metrics">
+    <div class="metric"><b id="pred">-</b><span>Prediction</span></div>
+    <div class="metric"><b id="conf">0%</b><span>Confidence</span></div>
+    <div class="metric"><b id="stable">0/8</b><span>Stability</span></div>
+  </div>
+  <div class="note">This camera runs directly in your browser. No WebRTC, STUN, TURN, or aiortc is used.</div>
+</div>
+<script>
+const TRAIN = __TRAINING__;
+const CONNECTIONS = __CONNECTIONS__;
+const video = document.getElementById("video"), canvas = document.getElementById("canvas"), ctx = canvas.getContext("2d");
+const statusEl = document.getElementById("status"), predEl = document.getElementById("pred"), confEl = document.getElementById("conf"), stableEl = document.getElementById("stable"), seqEl = document.getElementById("sequence"), startBtn = document.getElementById("startBtn");
+let stream=null, running=false, busy=false, sentence="", stableLabel=null, stableCount=0, lastRecorded=null, noHandFrames=0, trajectory=[];
+const STABLE_FRAMES=8, MIN_CONF=0.48;
+function updateSequence(){ seqEl.textContent=sentence||"—"; }
+document.getElementById("clearBtn").onclick=()=>{sentence="";lastRecorded=null;stableLabel=null;stableCount=0;updateSequence();};
+document.getElementById("deleteBtn").onclick=()=>{sentence=sentence.slice(0,-1);lastRecorded=null;updateSequence();};
+document.getElementById("spaceBtn").onclick=()=>{if(sentence&&!sentence.endsWith(" "))sentence+=" ";lastRecorded=null;updateSequence();};
+function features(lm){
+  let pts=lm.map(p=>[p.x,p.y]); const wx=pts[0][0],wy=pts[0][1]; pts=pts.map(([x,y])=>[x-wx,y-wy]);
+  let scale=0; for(const [x,y] of pts)scale=Math.max(scale,Math.hypot(x,y)); if(scale>1e-6)pts=pts.map(([x,y])=>[x/scale,y/scale]);
+  if(pts[5][0]>pts[17][0])pts=pts.map(([x,y])=>[-x,y]);
+  const axis=pts[9],angle=Math.atan2(axis[1],axis[0])-(-Math.PI/2),c=Math.cos(-angle),s=Math.sin(-angle); pts=pts.map(([x,y])=>[x*c-y*s,x*s+y*c]);
+  const out=[]; for(const p of pts)out.push(p[0],p[1]); const lengths=[];
+  for(const [a,b] of CONNECTIONS){const vx=pts[b][0]-pts[a][0],vy=pts[b][1]-pts[a][1];out.push(vx,vy);lengths.push(Math.hypot(vx,vy));} out.push(...lengths);
+  const triples=[[1,2,3],[2,3,4],[5,6,7],[6,7,8],[9,10,11],[10,11,12],[13,14,15],[14,15,16],[17,18,19],[18,19,20]];
+  for(const [a,b,cidx] of triples){const ux=pts[a][0]-pts[b][0],uy=pts[a][1]-pts[b][1],vx=pts[cidx][0]-pts[b][0],vy=pts[cidx][1]-pts[b][1],denom=Math.hypot(ux,uy)*Math.hypot(vx,vy);if(denom<1e-7)out.push(0);else{let cos=(ux*vx+uy*vy)/denom;cos=Math.max(-1,Math.min(1,cos));out.push(Math.acos(cos)/Math.PI);}}
+  const tips=[4,8,12,16,20]; for(const t of tips)out.push(Math.hypot(pts[t][0],pts[t][1]));
+  for(let i=0;i<tips.length;i++)for(let j=i+1;j<tips.length;j++){const a=tips[i],b=tips[j];out.push(Math.hypot(pts[a][0]-pts[b][0],pts[a][1]-pts[b][1]));}
+  return out;
+}
+function classify(raw){
+  if(raw.length!==TRAIN.mean.length)return["-",0]; const z=raw.map((v,i)=>(v-TRAIN.mean[i])/TRAIN.std[i]); const best=[];
+  for(let r=0;r<TRAIN.x.length;r++){const row=TRAIN.x[r];let d=0;for(let i=0;i<z.length;i++){const diff=z[i]-row[i];d+=diff*diff;}if(best.length<7){best.push([d,r]);best.sort((a,b)=>a[0]-b[0]);}else if(d<best[6][0]){best[6]=[d,r];best.sort((a,b)=>a[0]-b[0]);}}
+  const scores={};let total=0;for(const [d,idx] of best){const w=1/(Math.sqrt(d)+0.2),label=TRAIN.y[idx];scores[label]=(scores[label]||0)+w;total+=w;}let label="-",score=0;for(const[k,v]of Object.entries(scores)){if(v>score){score=v;label=k;}}return[label,total>0?score/total:0];
+}
+function drawLandmarks(lm,label,conf){
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);const pts=lm.map(p=>[p.x*canvas.width,p.y*canvas.height]),xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);
+  const left=Math.max(Math.min(...xs)-24,0),top=Math.max(Math.min(...ys)-24,0),right=Math.min(Math.max(...xs)+24,canvas.width),bottom=Math.min(Math.max(...ys)+24,canvas.height);
+  ctx.strokeStyle="#00ff50";ctx.lineWidth=4;ctx.strokeRect(left,top,right-left,bottom-top);ctx.strokeStyle="#ffffff";ctx.lineWidth=3;
+  for(const[a,b]of CONNECTIONS){ctx.beginPath();ctx.moveTo(...pts[a]);ctx.lineTo(...pts[b]);ctx.stroke();}
+  for(const[x,y]of pts){ctx.beginPath();ctx.fillStyle="#ff2020";ctx.arc(x,y,5,0,Math.PI*2);ctx.fill();}
+  trajectory.push(pts[8]);if(trajectory.length>18)trajectory.shift();ctx.strokeStyle="#00dcff";ctx.lineWidth=3;if(trajectory.length>1){ctx.beginPath();ctx.moveTo(...trajectory[0]);for(let i=1;i<trajectory.length;i++)ctx.lineTo(...trajectory[i]);ctx.stroke();}
+  ctx.fillStyle="rgba(8,15,30,.9)";ctx.fillRect(12,12,290,92);ctx.strokeStyle="#00ff50";ctx.lineWidth=2;ctx.strokeRect(12,12,290,92);ctx.fillStyle="#fff";ctx.font="bold 22px sans-serif";ctx.fillText("SIGN: "+label,26,42);ctx.fillStyle="#70ff96";ctx.font="16px sans-serif";ctx.fillText("CONFIDENCE: "+(conf*100).toFixed(1)+"%",26,70);ctx.fillStyle="#b8beff";ctx.fillText("TEXT: "+(sentence.slice(-20)||"-"),26,94);
+}
+function drawNoHand(){ctx.drawImage(video,0,0,canvas.width,canvas.height);ctx.fillStyle="rgba(8,15,30,.9)";ctx.fillRect(12,12,260,64);ctx.fillStyle="#d0d8e0";ctx.font="bold 20px sans-serif";ctx.fillText("WAITING FOR HAND",26,50);}
+const hands=new Hands({locateFile:(file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+hands.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:0.55,minTrackingConfidence:0.55});
+hands.onResults((results)=>{busy=false;if(!running)return;if(!results.multiHandLandmarks||!results.multiHandLandmarks.length){noHandFrames++;trajectory=[];stableLabel=null;stableCount=0;predEl.textContent="-";confEl.textContent="0%";stableEl.textContent="0/8";if(noHandFrames>=5)lastRecorded=null;drawNoHand();return;}noHandFrames=0;const lm=results.multiHandLandmarks[0];const[label,conf]=classify(features(lm));if(stableLabel===label)stableCount++;else{stableLabel=label;stableCount=1;}if(conf>=MIN_CONF&&stableCount>=STABLE_FRAMES&&lastRecorded!==label){sentence+=label;lastRecorded=label;updateSequence();}predEl.textContent=label;confEl.textContent=(conf*100).toFixed(1)+"%";stableEl.textContent=Math.min(stableCount,STABLE_FRAMES)+"/"+STABLE_FRAMES;drawLandmarks(lm,label,conf);});
+async function loop(){if(!running)return;if(!busy&&video.readyState>=2){busy=true;try{await hands.send({image:video});}catch(e){busy=false;statusEl.textContent="MediaPipe error: "+e.message;}}requestAnimationFrame(loop);}
+async function startCamera(){if(running)return;try{statusEl.textContent="Requesting camera...";stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:"user"},audio:false});video.srcObject=stream;await video.play();running=true;startBtn.textContent="■ STOP CAMERA";startBtn.onclick=stopCamera;statusEl.innerHTML='<span class="good">Camera connected directly in browser.</span>';requestAnimationFrame(loop);}catch(e){statusEl.innerHTML='<span class="bad">Camera error: '+e.name+' — '+e.message+'</span>';}}
+function stopCamera(){running=false;if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;startBtn.textContent="▶ START CAMERA";startBtn.onclick=startCamera;statusEl.textContent="Camera stopped.";ctx.clearRect(0,0,canvas.width,canvas.height);}
+startBtn.onclick=startCamera;updateSequence();
+</script>
+</body>
+</html>
+"""
+    html = html.replace("__TRAINING__", training_json)
+    html = html.replace("__CONNECTIONS__", connections_json)
+    components.html(html, height=790, scrolling=False)
 
 dataset_path = prepare_dataset()
-
-
-with st.spinner(
-    "Extracting 21-point hand landmarks from the dataset..."
-):
-
-    (
-        X,
-        y,
-        detected_counts,
-        failed_counts
-    ) = load_dataset_landmarks(
-        dataset_path
-    )
-
-
-if len(
-    X
-) == 0:
-
-    st.error(
-        """
-        MediaPipe could not extract
-        any usable hand landmarks
-        from the dataset.
-        """
-    )
-
+with st.spinner("Reading dataset hand landmarks..."):
+    X, y, detected_counts, failed_counts = load_dataset_landmarks(dataset_path)
+if len(X) == 0:
+    st.error("MediaPipe could not detect any usable training samples.")
     st.stop()
-
-
-with st.spinner(
-    "Training SIGNOVA..."
-):
-
-    (
-        model,
-        accuracy,
-        eval_train_count,
-        eval_test_count,
-        eval_classes
-    ) = train_classifier(
-        X,
-        y
-    )
-
-
-# ============================================================
-# DATASET STATISTICS
-# ============================================================
-
-if accuracy is None:
-
-    accuracy_text = "N/A"
-
-else:
-
-    accuracy_text = (
-        f"{accuracy * 100:.1f}%"
-    )
-
-
-usable_samples = len(
-    X
-)
-
-
-extraction_rate = (
-    usable_samples
-    /
-    TOTAL_IMAGES
-    *
-    100
-)
-
-
-available_classes = sorted(
-    np.unique(
-        y
-    ).tolist()
-)
-
-
-missing_classes = [
-
-    label
-
-    for label in CLASSES
-
-    if label
-    not in available_classes
-]
-
-
-# ============================================================
-# SHARED CAMERA STATE
-# ============================================================
-
-class RecognitionState:
-
-    def __init__(self):
-
-        self.lock = (
-            threading.Lock()
-        )
-
-        self.hand_detected = False
-
-        self.prediction = "-"
-
-        self.confidence = 0.0
-
-        self.sentence = ""
-
-        self.stable_prediction = None
-
-        self.stable_count = 0
-
-        self.last_recorded = None
-
-        self.last_record_time = 0.0
-
-        self.no_hand_count = 0
-
-
-if "recognition_state" not in st.session_state:
-
-    st.session_state.recognition_state = (
-        RecognitionState()
-    )
-
-
-state = (
-    st.session_state
-    .recognition_state
-)
-
-
-# ============================================================
-# CAMERA OVERLAY
-# ============================================================
-
-def draw_overlay(
-
-    frame,
-
-    landmarks,
-
-    prediction,
-
-    confidence,
-
-    trajectory
-):
-
-    image = Image.fromarray(
-        frame
-    ).convert(
-        "RGB"
-    )
-
-
-    draw = ImageDraw.Draw(
-        image
-    )
-
-
-    width, height = (
-        image.size
-    )
-
-
-    points = [
-
-        (
-            int(
-                p.x
-                *
-                width
-            ),
-
-            int(
-                p.y
-                *
-                height
-            )
-        )
-
-        for p in landmarks
-    ]
-
-
-    xs = [
-
-        p[0]
-
-        for p in points
-    ]
-
-
-    ys = [
-
-        p[1]
-
-        for p in points
-    ]
-
-
-    # ========================================================
-    # GREEN HAND FRAME
-    # ========================================================
-
-    left = max(
-        min(xs) - 25,
-        0
-    )
-
-
-    top = max(
-        min(ys) - 25,
-        0
-    )
-
-
-    right = min(
-        max(xs) + 25,
-        width - 1
-    )
-
-
-    bottom = min(
-        max(ys) + 25,
-        height - 1
-    )
-
-
-    draw.rectangle(
-
-        [
-            left,
-            top,
-            right,
-            bottom
-        ],
-
-        outline=(
-            0,
-            255,
-            80
-        ),
-
-        width=5
-    )
-
-
-    # ========================================================
-    # HAND DETECTED TAG
-    # ========================================================
-
-    tag_top = max(
-        0,
-        top - 28
-    )
-
-
-    draw.rectangle(
-
-        [
-            left,
-
-            tag_top,
-
-            min(
-                left + 160,
-                width - 1
-            ),
-
-            top
-        ],
-
-        fill=(
-            0,
-            170,
-            70
-        )
-    )
-
-
-    draw.text(
-
-        (
-            left + 8,
-            tag_top + 6
-        ),
-
-        "HAND DETECTED",
-
-        fill="white"
-    )
-
-
-    # ========================================================
-    # WHITE LINES / VECTORS
-    # ========================================================
-
-    for a, b in HAND_CONNECTIONS:
-
-        draw.line(
-
-            [
-                points[a],
-                points[b]
-            ],
-
-            fill=(
-                255,
-                255,
-                255
-            ),
-
-            width=3
-        )
-
-
-    # ========================================================
-    # RED LANDMARKS
-    # ========================================================
-
-    for x, y_point in points:
-
-        radius = 6
-
-
-        draw.ellipse(
-
-            [
-                x - radius,
-                y_point - radius,
-
-                x + radius,
-                y_point + radius
-            ],
-
-            fill=(
-                255,
-                25,
-                25
-            ),
-
-            outline="white",
-
-            width=1
-        )
-
-
-    # ========================================================
-    # HAND CENTROID
-    # ========================================================
-
-    centroid_x = int(
-        sum(xs)
-        /
-        len(xs)
-    )
-
-
-    centroid_y = int(
-        sum(ys)
-        /
-        len(ys)
-    )
-
-
-    radius = 9
-
-
-    draw.ellipse(
-
-        [
-            centroid_x - radius,
-            centroid_y - radius,
-
-            centroid_x + radius,
-            centroid_y + radius
-        ],
-
-        fill=(
-            255,
-            0,
-            0
-        ),
-
-        outline=(
-            255,
-            255,
-            0
-        ),
-
-        width=3
-    )
-
-
-    # ========================================================
-    # INDEX FINGER TRAJECTORY
-    # ========================================================
-
-    history = list(
-        trajectory
-    )
-
-
-    for i in range(
-        1,
-        len(history)
-    ):
-
-        draw.line(
-
-            [
-                history[
-                    i - 1
-                ],
-
-                history[
-                    i
-                ]
-            ],
-
-            fill=(
-                0,
-                220,
-                255
-            ),
-
-            width=3
-        )
-
-
-    # ========================================================
-    # PREDICTION PANEL
-    # ========================================================
-
-    draw.rounded_rectangle(
-
-        [
-            15,
-            15,
-            245,
-            108
-        ],
-
-        radius=14,
-
-        fill=(
-            8,
-            15,
-            30
-        ),
-
-        outline=(
-            0,
-            255,
-            80
-        ),
-
-        width=3
-    )
-
-
-    draw.text(
-
-        (
-            30,
-            31
-        ),
-
-        f"SIGN: {prediction}",
-
-        fill="white"
-    )
-
-
-    draw.text(
-
-        (
-            30,
-            62
-        ),
-
-        (
-            f"CONFIDENCE: "
-            f"{confidence * 100:.1f}%"
-        ),
-
-        fill=(
-            100,
-            255,
-            140
-        )
-    )
-
-
-    return np.asarray(
-        image
-    )
-
-
-# ============================================================
-# WEBRTC VIDEO PROCESSOR
-# ============================================================
-
-class SignovaProcessor:
-
-    def __init__(
-
-        self,
-
-        classifier,
-
-        shared_state
-    ):
-
-        self.model = classifier
-
-        self.state = shared_state
-
-        self.lock = (
-            threading.Lock()
-        )
-
-
-        self.trajectory = deque(
-            maxlen=TRAJECTORY_LENGTH
-        )
-
-
-        # Create MediaPipe detector ONCE.
-
-        self.hands = mp_hands.Hands(
-
-            static_image_mode=False,
-
-            max_num_hands=1,
-
-            model_complexity=1,
-
-            min_detection_confidence=0.60,
-
-            min_tracking_confidence=0.60
-        )
-
-
-    def recv(
-        self,
-        frame
-    ):
-
-        with self.lock:
-
-            rgb = frame.to_ndarray(
-                format="rgb24"
-            )
-
-
-            result = self.hands.process(
-                rgb
-            )
-
-
-            # =================================================
-            # NO HAND
-            # =================================================
-
-            if not result.multi_hand_landmarks:
-
-                self.trajectory.clear()
-
-
-                with self.state.lock:
-
-                    self.state.hand_detected = False
-
-                    self.state.prediction = "-"
-
-                    self.state.confidence = 0.0
-
-                    self.state.stable_prediction = None
-
-                    self.state.stable_count = 0
-
-                    self.state.no_hand_count += 1
-
-
-                    if (
-                        self.state.no_hand_count
-                        >=
-                        NO_HAND_REARM_FRAMES
-                    ):
-
-                        self.state.last_recorded = None
-
-
-                return av.VideoFrame.from_ndarray(
-
-                    rgb,
-
-                    format="rgb24"
-                )
-
-
-            # =================================================
-            # HAND DETECTED
-            # =================================================
-
-            landmarks = (
-                result
-                .multi_hand_landmarks[0]
-                .landmark
-            )
-
-
-            feature = features_from_landmarks(
-                landmarks
-            ).reshape(
-                1,
-                -1
-            )
-
-
-            probabilities = (
-                self.model
-                .predict_proba(
-                    feature
-                )[0]
-            )
-
-
-            best = int(
-                np.argmax(
-                    probabilities
-                )
-            )
-
-
-            prediction = str(
-                self.model
-                .classes_[
-                    best
-                ]
-            )
-
-
-            confidence = float(
-                probabilities[
-                    best
-                ]
-            )
-
-
-            # =================================================
-            # TRAJECTORY
-            # =================================================
-
-            height, width, _ = (
-                rgb.shape
-            )
-
-
-            tip = landmarks[
-                8
-            ]
-
-
-            self.trajectory.append(
-
-                (
-                    int(
-                        tip.x
-                        *
-                        width
-                    ),
-
-                    int(
-                        tip.y
-                        *
-                        height
-                    )
-                )
-            )
-
-
-            now = time.time()
-
-
-            # =================================================
-            # STATE UPDATE
-            # =================================================
-
-            with self.state.lock:
-
-                self.state.hand_detected = True
-
-                self.state.no_hand_count = 0
-
-                self.state.prediction = prediction
-
-                self.state.confidence = confidence
-
-
-                # ---------------------------------------------
-                # STABILITY
-                # ---------------------------------------------
-
-                if (
-                    self.state.stable_prediction
-                    ==
-                    prediction
-                ):
-
-                    self.state.stable_count += 1
-
-
-                else:
-
-                    self.state.stable_prediction = (
-                        prediction
-                    )
-
-                    self.state.stable_count = 1
-
-
-                # ---------------------------------------------
-                # RECORD LETTER
-                # ---------------------------------------------
-
-                should_record = (
-
-                    confidence
-                    >=
-                    CONFIDENCE_THRESHOLD
-
-                    and
-
-                    self.state.stable_count
-                    >=
-                    STABLE_FRAMES
-
-                    and
-
-                    self.state.last_recorded
-                    !=
-                    prediction
-
-                    and
-
-                    (
-                        now
-                        -
-                        self.state.last_record_time
-                    )
-                    >=
-                    RECORD_COOLDOWN
-                )
-
-
-                if should_record:
-
-                    self.state.sentence += (
-                        prediction
-                    )
-
-
-                    self.state.last_recorded = (
-                        prediction
-                    )
-
-
-                    self.state.last_record_time = (
-                        now
-                    )
-
-
-            # =================================================
-            # DRAW
-            # =================================================
-
-            output = draw_overlay(
-
-                rgb,
-
-                landmarks,
-
-                prediction,
-
-                confidence,
-
-                self.trajectory
-            )
-
-
-            return av.VideoFrame.from_ndarray(
-
-                output,
-
-                format="rgb24"
-            )
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
+with st.spinner("Preparing SIGNOVA model..."):
+    model, accuracy, eval_test = train_eval_model(X, y)
+    browser_payload = browser_training_payload(X, y)
+available_classes = sorted(np.unique(y).tolist())
+extraction_rate = len(X) / TOTAL_IMAGES * 100.0
+accuracy_text = "N/A" if accuracy is None else f"{accuracy*100:.1f}%"
 
 with st.sidebar:
-
-    st.markdown(
-        """
-        <div class="brand">
-            🤟 SIGNOVA
-        </div>
-
-        <div class="muted">
-            Real-Time Hand Sign Recognition
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-    st.markdown(
-        "---"
-    )
-
-
-    page = st.radio(
-
-        "NAVIGATION",
-
-        [
-            "🎥 Live Translator",
-            "📊 Dataset Lab",
-            "🧠 Model Insights",
-            "👁 Computer Vision",
-            "ℹ️ About"
-        ]
-    )
-
-
-    st.markdown(
-        "---"
-    )
-
-
-    st.success(
-        "Recognition engine online"
-    )
-
-
-    st.caption(
-        f"{len(available_classes)} / 36 classes usable"
-    )
-
-
-    st.caption(
-        f"{usable_samples} landmark samples"
-    )
-
-
-    st.caption(
-        f"{extraction_rate:.1f}% extraction rate"
-    )
-
-
-# ============================================================
-# LIVE REFRESH AREA
-# ============================================================
-
-@st.fragment(
-    run_every=0.25
-)
-def live_panel():
-
-    with state.lock:
-
-        sentence = (
-            state.sentence
-        )
-
-        prediction = (
-            state.prediction
-        )
-
-        confidence = (
-            state.confidence
-        )
-
-        detected = (
-            state.hand_detected
-        )
-
-        stable = (
-            state.stable_count
-        )
-
-
-    # ========================================================
-    # SENTENCE
-    # ========================================================
-
-    if sentence:
-
-        text = sentence
-
-        css = "stext"
-
-
-    else:
-
-        text = (
-            "Detected signs will appear here..."
-        )
-
-        css = (
-            "stext empty"
-        )
-
-
-    st.markdown(
-
-        f"""
-        <div class="sentence">
-
-            <div class="slabel">
-                DETECTED SENTENCE / SEQUENCE
-            </div>
-
-            <div class="{css}">
-                {text}
-            </div>
-
-        </div>
-        """,
-
-        unsafe_allow_html=True
-    )
-
-
-    # ========================================================
-    # STATUS
-    # ========================================================
-
-    c1, c2 = st.columns(
-        2
-    )
-
-
-    with c1:
-
-        if detected:
-
-            status = (
-                "🟢 HAND DETECTED"
-            )
-
-            status_css = (
-                "good"
-            )
-
-
-        else:
-
-            status = (
-                "○ WAITING FOR HAND"
-            )
-
-            status_css = (
-                "wait"
-            )
-
-
-        st.markdown(
-
-            f"""
-            <div class="card">
-
-                <span class="{status_css}">
-                    {status}
-                </span>
-
-            </div>
-            """,
-
-            unsafe_allow_html=True
-        )
-
-
-    with c2:
-
-        st.markdown(
-
-            f"""
-            <div class="card">
-
-                Sign:
-                <strong>
-                    {prediction}
-                </strong>
-
-                &nbsp;
-
-                Confidence:
-                <strong>
-                    {confidence * 100:.1f}%
-                </strong>
-
-                <br>
-
-                Stability:
-                <strong>
-                    {min(stable, STABLE_FRAMES)}
-                    /
-                    {STABLE_FRAMES}
-                </strong>
-
-            </div>
-            """,
-
-            unsafe_allow_html=True
-        )
-
-
-# ============================================================
-# LIVE TRANSLATOR PAGE
-# ============================================================
+    st.markdown("## 🤟 SIGNOVA")
+    st.caption("Real-Time Static Hand-Sign Recognition")
+    page = st.radio("Navigation", ["🎥 Live Translator", "📊 Dataset Lab", "🧠 Model Insights", "ℹ️ About"])
+    st.markdown("---")
+    st.caption(f"{len(available_classes)} / 36 classes usable")
+    st.caption(f"{len(X)} landmark samples")
+    st.caption(f"{extraction_rate:.1f}% extraction rate")
 
 if page == "🎥 Live Translator":
-
-    hero(
-
-        "Real-Time Computer Vision",
-
-        "SIGNOVA",
-
-        """
-        Show a static hand sign. SIGNOVA detects 21 hand
-        landmarks, builds landmark/vector features, compares
-        them with your A-Z and 0-9 dataset, and appends
-        stable predictions to the letter box.
-        """
-    )
-
-
-    live_panel()
-
-
-    # ========================================================
-    # BUTTONS
-    # ========================================================
-
-    b1, b2, b3, _ = st.columns(
-        [
-            1,
-            1,
-            1,
-            3
-        ]
-    )
-
-
-    with b1:
-
-        if st.button(
-
-            "🗑 Clear",
-
-            use_container_width=True
-        ):
-
-            with state.lock:
-
-                state.sentence = ""
-
-                state.last_recorded = None
-
-                state.stable_prediction = None
-
-                state.stable_count = 0
-
-
-            st.rerun()
-
-
-    with b2:
-
-        if st.button(
-
-            "⌫ Delete",
-
-            use_container_width=True
-        ):
-
-            with state.lock:
-
-                if state.sentence:
-
-                    state.sentence = (
-                        state.sentence[:-1]
-                    )
-
-
-                state.last_recorded = None
-
-
-            st.rerun()
-
-
-    with b3:
-
-        if st.button(
-
-            "␣ Space",
-
-            use_container_width=True
-        ):
-
-            with state.lock:
-
-                if (
-                    state.sentence
-                    and
-                    not state.sentence.endswith(
-                        " "
-                    )
-                ):
-
-                    state.sentence += " "
-
-
-                state.last_recorded = None
-
-
-            st.rerun()
-
-
-    st.markdown(
-        "<br>",
-        unsafe_allow_html=True
-    )
-
-
-    # ========================================================
-    # CAMERA AREA
-    # ========================================================
-
-    camera_col, guide_col = st.columns(
-        [
-            1.6,
-            1
-        ]
-    )
-
-
-    with camera_col:
-
-        st.markdown(
-            """
-            <div class="card">
-
-                <strong>
-                    Live Overlay
-                </strong>
-
-                <br>
-
-                🟩 Green = hand frame
-
-                <br>
-
-                🔴 Red = landmarks / centroid
-
-                <br>
-
-                ⚪ White = vectors
-
-                <br>
-
-                🔵 Cyan = fingertip trajectory
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-
-        st.markdown(
-            "<br>",
-            unsafe_allow_html=True
-        )
-
-
-        def processor_factory():
-
-            return SignovaProcessor(
-
-                model,
-
-                state
-            )
-
-
-        webrtc_streamer(
-
-            key="signova-camera",
-
-            mode=WebRtcMode.SENDRECV,
-
-            video_processor_factory=(
-                processor_factory
-            ),
-
-            media_stream_constraints={
-
-                "video": {
-
-                    "width": {
-                        "ideal": 640
-                    },
-
-                    "height": {
-                        "ideal": 480
-                    }
-                },
-
-                "audio": False
-            },
-
-            async_processing=True
-        )
-
-
-    with guide_col:
-
-        st.markdown(
-
-            f"""
-            <div class="info">
-
-            <strong>
-                How to type
-            </strong>
-
-            <br><br>
-
-            Hold a sign steady until it reaches:
-
-            <strong>
-                {STABLE_FRAMES}/{STABLE_FRAMES}
-            </strong>
-
-            <br><br>
-
-            A prediction needs at least:
-
-            <strong>
-                {CONFIDENCE_THRESHOLD * 100:.0f}%
-            </strong>
-
-            confidence.
-
-            <br><br>
-
-            Remove your hand briefly before repeating
-            the same letter.
-
-            <br><br>
-
-            Example:
-
-            <strong>
-                H → E → L → remove hand → L → O
-            </strong>
-
-            <br><br>
-
-            Result:
-
-            <strong>
-                HELLO
-            </strong>
-
-            </div>
-            """,
-
-            unsafe_allow_html=True
-        )
-
-
-    # ========================================================
-    # METRICS
-    # ========================================================
-
-    st.markdown(
-        "<br>",
-        unsafe_allow_html=True
-    )
-
-
-    columns = st.columns(
-        5
-    )
-
-
-    values = [
-
-        36,
-
-        21,
-
-        usable_samples,
-
-        accuracy_text,
-
-        "KNN"
-    ]
-
-
-    labels = [
-
-        "Classes",
-
-        "Landmarks",
-
-        "Usable Samples",
-
-        "Accuracy",
-
-        "Classifier"
-    ]
-
-
-    for (
-        column,
-        value,
-        label
-    ) in zip(
-        columns,
-        values,
-        labels
-    ):
-
-        metric_card(
-            column,
-            value,
-            label
-        )
-
-
-# ============================================================
-# DATASET LAB PAGE
-# ============================================================
-
+    hero("SIGNOVA", "Real-time static hand-sign recognition running directly in your browser. This version bypasses WebRTC, STUN, TURN and aiortc completely.")
+    st.success("Direct-browser camera mode is active. Click START CAMERA below. Your video stays in the browser; only the precomputed training features are embedded.")
+    browser_camera_component(browser_payload)
 elif page == "📊 Dataset Lab":
-
-    hero(
-
-        "Dataset Analysis",
-
-        "Dataset Lab",
-
-        """
-        See which of the 900 supplied images
-        MediaPipe can successfully convert into
-        21-point landmark samples.
-        """
-    )
-
-
-    c1, c2, c3, c4 = st.columns(
-        4
-    )
-
-
-    c1.metric(
-        "Original Images",
-        TOTAL_IMAGES
-    )
-
-
-    c2.metric(
-        "Classes",
-        36
-    )
-
-
-    c3.metric(
-        "Usable Samples",
-        usable_samples
-    )
-
-
-    c4.metric(
-        "Extraction Rate",
-        f"{extraction_rate:.1f}%"
-    )
-
-
-    # ========================================================
-    # DIAGNOSTIC TABLE
-    # ========================================================
-
-    st.subheader(
-        "Landmark Extraction Diagnostics"
-    )
-
-
+    hero("Dataset Lab", "MediaPipe landmark extraction results for your 900 images.")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Original Images", TOTAL_IMAGES); c2.metric("Classes", 36); c3.metric("Usable Samples", len(X)); c4.metric("Extraction Rate", f"{extraction_rate:.1f}%")
     rows = []
-
-
     for label in CLASSES:
-
-        detected = int(
-            detected_counts.get(
-                label,
-                0
-            )
-        )
-
-
-        failed = int(
-            failed_counts.get(
-                label,
-                0
-            )
-        )
-
-
-        percent = (
-            detected
-            /
-            IMAGES_PER_CLASS
-            *
-            100
-        )
-
-
-        rows.append(
-            {
-                "Sign":
-                    label,
-
-                "Original Images":
-                    IMAGES_PER_CLASS,
-
-                "Landmarks Detected":
-                    detected,
-
-                "Failed Detection":
-                    failed,
-
-                "Detection Rate":
-                    f"{percent:.1f}%"
-            }
-        )
-
-
-    st.dataframe(
-
-        rows,
-
-        use_container_width=True,
-
-        hide_index=True
-    )
-
-
-    # ========================================================
-    # MISSING CLASSES
-    # ========================================================
-
-    if missing_classes:
-
-        st.warning(
-
-            "No usable samples for: "
-            +
-            ", ".join(
-                missing_classes
-            )
-        )
-
-
-    else:
-
-        st.success(
-            """
-            All 36 classes have at least
-            one usable landmark sample.
-            """
-        )
-
-
-    # ========================================================
-    # IMAGE EXPLORER
-    # ========================================================
-
-    st.subheader(
-        "Image Explorer"
-    )
-
-
-    selected = st.selectbox(
-
-        "Choose a sign",
-
-        CLASSES
-    )
-
-
-    folder = os.path.join(
-
-        dataset_path,
-
-        selected
-    )
-
-
-    if os.path.isdir(
-        folder
-    ):
-
-        files = sorted(
-            [
-                f
-                for f in os.listdir(
-                    folder
-                )
-                if f.lower().endswith(
-                    (
-                        ".jpg",
-                        ".jpeg",
-                        ".png"
-                    )
-                )
-            ]
-        )
-
-
-        gallery = st.columns(
-            5
-        )
-
-
-        for i, filename in enumerate(
-            files[:20]
-        ):
-
-            try:
-
-                with gallery[
-                    i % 5
-                ]:
-
-                    st.image(
-
-                        Image.open(
-                            os.path.join(
-                                folder,
-                                filename
-                            )
-                        ),
-
-                        use_container_width=True
-                    )
-
-
-            except Exception:
-
-                pass
-
-
-# ============================================================
-# MODEL PAGE
-# ============================================================
-
+        detected = int(detected_counts.get(label, 0)); failed = int(failed_counts.get(label, 0))
+        rows.append({"Sign": label, "Images": IMAGES_PER_CLASS, "Detected": detected, "Failed": failed, "Detection Rate": f"{detected/IMAGES_PER_CLASS*100:.1f}%"})
+    st.dataframe(rows, use_container_width=True, hide_index=True)
 elif page == "🧠 Model Insights":
-
-    hero(
-
-        "Machine Learning",
-
-        "Model Insights",
-
-        """
-        The live model uses every usable landmark sample.
-        Accuracy uses a separate safe class-balanced
-        evaluation split.
-        """
-    )
-
-
-    a, b, c, d = st.columns(
-        4
-    )
-
-
-    a.metric(
-        "Classifier",
-        "KNN"
-    )
-
-
-    b.metric(
-        "Evaluation Training",
-        eval_train_count
-    )
-
-
-    c.metric(
-        "Evaluation Testing",
-        eval_test_count
-    )
-
-
-    d.metric(
-        "Accuracy",
-        accuracy_text
-    )
-
-
-    st.markdown(
-        """
-        <div class="info">
-
-        <strong>
-            Features used by SIGNOVA
-        </strong>
-
-        <br><br>
-
-        • 21 X/Y/Z hand landmarks
-
-        <br>
-
-        • Wrist-relative normalization
-
-        <br>
-
-        • Hand-size normalization
-
-        <br>
-
-        • Mirror normalization
-
-        <br>
-
-        • Joint-to-joint vectors
-
-        <br>
-
-        • Fingertip distances
-
-        <br><br>
-
-        The previous fixed stratified 20% split
-        is not used, so classes with only a few
-        detected landmark samples no longer
-        crash the model training.
-
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-# ============================================================
-# COMPUTER VISION PAGE
-# ============================================================
-
-elif page == "👁 Computer Vision":
-
-    hero(
-
-        "Image Processing",
-
-        "Computer Vision",
-
-        """
-        The live camera visualizes the features
-        SIGNOVA uses to describe the hand.
-        """
-    )
-
-
-    st.markdown(
-        """
-        <div class="info">
-
-        <strong>
-            🟩 Green Frame
-        </strong>
-
-        <br>
-
-        Detected hand region.
-
-        <br><br>
-
-        <strong>
-            🔴 Red Points
-        </strong>
-
-        <br>
-
-        21 hand landmarks.
-
-        <br><br>
-
-        <strong>
-            ⚪ White Lines
-        </strong>
-
-        <br>
-
-        Connected joint vectors / skeleton.
-
-        <br><br>
-
-        <strong>
-            🔴 / 🟡 Centroid
-        </strong>
-
-        <br>
-
-        Approximate hand centre.
-
-        <br><br>
-
-        <strong>
-            🔵 Cyan Trajectory
-        </strong>
-
-        <br>
-
-        Recent movement of the index fingertip.
-
-        <br><br>
-
-        The current classifier recognizes static hand
-        shape. The trajectory is visualized as a
-        computer-vision feature but is not yet used
-        to classify dynamic signs.
-
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-    st.subheader(
-        "21 Hand Landmarks"
-    )
-
-
-    names = [
-
-        "0 Wrist",
-
-        "1 Thumb CMC",
-
-        "2 Thumb MCP",
-
-        "3 Thumb IP",
-
-        "4 Thumb Tip",
-
-        "5 Index MCP",
-
-        "6 Index PIP",
-
-        "7 Index DIP",
-
-        "8 Index Tip",
-
-        "9 Middle MCP",
-
-        "10 Middle PIP",
-
-        "11 Middle DIP",
-
-        "12 Middle Tip",
-
-        "13 Ring MCP",
-
-        "14 Ring PIP",
-
-        "15 Ring DIP",
-
-        "16 Ring Tip",
-
-        "17 Pinky MCP",
-
-        "18 Pinky PIP",
-
-        "19 Pinky DIP",
-
-        "20 Pinky Tip"
-    ]
-
-
-    cols = st.columns(
-        3
-    )
-
-
-    for i, name in enumerate(
-        names
-    ):
-
-        with cols[
-            i % 3
-        ]:
-
-            st.write(
-                "🔴 " + name
-            )
-
-
-# ============================================================
-# ABOUT PAGE
-# ============================================================
-
+    hero("Model Insights", "Server-side evaluation uses an RBF-SVM. Live browser recognition uses 7-nearest-neighbour voting on the same normalized 2D feature space.")
+    a, b, c, d = st.columns(4)
+    a.metric("Live Classifier", "7-NN"); b.metric("Usable Classes", len(available_classes)); c.metric("Evaluation Samples", eval_test); d.metric("SVM Eval Accuracy", accuracy_text)
+    st.markdown("""<div class="card"><b>Features</b><br><br>• 21 X/Y hand landmarks<br>• wrist-relative position<br>• scale normalization<br>• mirror normalization<br>• palm-axis rotation normalization<br>• joint vectors and bone lengths<br>• finger bend angles<br>• fingertip distances</div>""", unsafe_allow_html=True)
 else:
-
-    hero(
-
-        "Image Processing & Computer Vision",
-
-        "About SIGNOVA",
-
-        """
-        A real-time static hand-sign recognition
-        and sequence construction system built around
-        your 900-image, 36-class dataset.
-        """
-    )
-
-
-    st.markdown(
-        """
-        <div class="info">
-
-        SIGNOVA recognizes static A-Z and 0-9
-        hand signs.
-
-        <br><br>
-
-        It extracts MediaPipe hand landmarks from
-        the supplied dataset, trains a KNN model
-        on normalized landmark/vector features,
-        then applies the same feature extraction
-        to live webcam frames.
-
-        <br><br>
-
-        Stable predictions are recorded into the
-        letter box.
-
-        <br><br>
-
-        <strong>
-            Technology
-        </strong>
-
-        <br><br>
-
-        Python
-
-        <br>
-
-        Streamlit
-
-        <br>
-
-        Streamlit-WebRTC
-
-        <br>
-
-        MediaPipe
-
-        <br>
-
-        PyAV
-
-        <br>
-
-        NumPy
-
-        <br>
-
-        Pillow
-
-        <br>
-
-        Scikit-learn
-
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    hero("About SIGNOVA", "A real-time static hand-sign recognition and sentence construction system.")
+    st.markdown("""<div class="card">SIGNOVA detects 21 hand landmarks, converts them into normalized geometric features, compares them with the supplied 36-class dataset, and records stable predictions into a text sequence.<br><br>The Live Translator now performs camera capture and MediaPipe hand tracking directly in the browser. This avoids the network relay requirements of server-side WebRTC and keeps the webcam stream local to the user's browser.<br><br>This is static hand-sign recognition, not full motion- and grammar-aware natural-language sign-language translation.</div>""", unsafe_allow_html=True)

@@ -4,17 +4,74 @@ import threading
 import zipfile
 from collections import deque
 
-import av
-import mediapipe as mp
-import numpy as np
 import streamlit as st
+
+# ============================================================
+# OPENCV DEPLOYMENT DIAGNOSTIC
+# ============================================================
+
+try:
+    import cv2
+
+except Exception as error:
+    st.error("OpenCV failed to load.")
+    st.code(
+        f"""
+Exception type:
+{type(error).__name__}
+
+Full error:
+{repr(error)}
+
+Message:
+{str(error)}
+"""
+    )
+    st.stop()
+
+
+# ============================================================
+# MEDIAPIPE DIAGNOSTIC
+# ============================================================
+
+try:
+    import mediapipe as mp
+
+except Exception as error:
+    st.error("MediaPipe failed to load.")
+    st.code(
+        f"""
+Exception type:
+{type(error).__name__}
+
+Full error:
+{repr(error)}
+
+Message:
+{str(error)}
+"""
+    )
+    st.stop()
+
+
+# ============================================================
+# OTHER IMPORTS
+# ============================================================
+
+import av
+import numpy as np
+
 from PIL import Image, ImageDraw
+
 from sklearn.metrics import accuracy_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
+from streamlit_webrtc import (
+    WebRtcMode,
+    webrtc_streamer
+)
 # ============================================================
 # SIGNOVA CONFIG
 # ============================================================

@@ -1,8 +1,9 @@
-streamlit==1.51.0
+streamlit==1.60.0
 streamlit-webrtc==0.76.2
 av>=15.1.0
 mediapipe==0.10.21
-opencv-contrib-python==4.11.0.86
+./opencv_contrib_shim
+opencv-contrib-python-headless==4.11.0.86
 numpy==1.26.4
 protobuf==4.25.8
 Pillow

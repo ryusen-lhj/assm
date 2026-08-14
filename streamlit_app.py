@@ -1,11 +1,12 @@
-"""Streamlit Cloud entry point for SIGNOVA.
+"""Stable Streamlit Cloud entry point for SIGNOVA.
 
-This wrapper keeps the existing SIGNOVA app intact while applying:
-1. WebRTC STUN/TURN configuration for Streamlit Community Cloud.
-2. 2D-only MediaPipe landmark geometry.
-3. A balanced RBF-SVM drop-in classifier.
+This file deliberately keeps all compatibility patches idempotent. Streamlit
+reruns the entry script many times, so repeatedly monkey-patching WebRTC,
+MediaPipe, or sklearn can corrupt lifecycle state. The original functions are
+saved once and reused on every rerun.
 """
 
+from pathlib import Path
 import time
 
 import mediapipe as mp
@@ -19,10 +20,19 @@ from twilio.rest import Client
 
 
 # ============================================================
-# 1. WEBRTC CLOUD CONFIGURATION
+# WEBRTC CLOUD CONFIGURATION
 # ============================================================
 
-_original_webrtc_streamer = streamlit_webrtc.webrtc_streamer
+# Save the REAL streamlit-webrtc function once. On later Streamlit reruns we
+# reuse this reference instead of wrapping an already wrapped function.
+if not hasattr(streamlit_webrtc, "_signova_original_webrtc_streamer"):
+    streamlit_webrtc._signova_original_webrtc_streamer = (
+        streamlit_webrtc.webrtc_streamer
+    )
+
+_original_webrtc_streamer = (
+    streamlit_webrtc._signova_original_webrtc_streamer
+)
 
 _STUN_ONLY = {
     "iceServers": [
@@ -35,14 +45,8 @@ _STUN_ONLY = {
     ]
 }
 
-_turn_cache = {
-    "ice_servers": None,
-    "expires_at": 0.0,
-}
-
 
 def _secret(name):
-    """Read a Streamlit secret safely without crashing when it is absent."""
     try:
         value = st.secrets.get(name)
         if value:
@@ -53,48 +57,43 @@ def _secret(name):
 
 
 def _rtc_configuration():
-    """Return Twilio TURN credentials when configured, otherwise STUN only."""
+    """Use cached Twilio TURN credentials when available, else STUN."""
     sid = _secret("TWILIO_ACCOUNT_SID")
     auth_token = _secret("TWILIO_AUTH_TOKEN")
 
     if not sid or not auth_token:
-        return _STUN_ONLY, False
+        return _STUN_ONLY
 
     now = time.time()
+    cache_key = "_signova_turn_cache"
+    cached = st.session_state.get(cache_key)
 
-    if (
-        _turn_cache["ice_servers"] is not None
-        and now < _turn_cache["expires_at"]
-    ):
-        return {"iceServers": _turn_cache["ice_servers"]}, True
+    if cached:
+        if now < cached.get("expires_at", 0):
+            ice_servers = cached.get("ice_servers")
+            if ice_servers:
+                return {"iceServers": ice_servers}
 
     try:
-        client = Client(sid, auth_token)
-        token = client.tokens.create()
-
-        # Keep TURN credentials fresh. Twilio tokens are temporary, so do not
-        # cache them for the whole lifetime of the Streamlit process.
-        _turn_cache["ice_servers"] = token.ice_servers
-        _turn_cache["expires_at"] = now + 1800
-
-        return {"iceServers": token.ice_servers}, True
-
+        token = Client(sid, auth_token).tokens.create()
+        ice_servers = token.ice_servers
+        st.session_state[cache_key] = {
+            "ice_servers": ice_servers,
+            "expires_at": now + 1800,
+        }
+        return {"iceServers": ice_servers}
     except Exception:
-        # Never crash the whole SIGNOVA app if TURN token retrieval fails.
-        return _STUN_ONLY, False
+        # Keep the application usable even if Twilio token generation fails.
+        return _STUN_ONLY
 
 
 def _cloud_webrtc_streamer(*args, **kwargs):
-    if "rtc_configuration" not in kwargs:
-        rtc_config, has_turn = _rtc_configuration()
-        kwargs["rtc_configuration"] = rtc_config
+    kwargs.setdefault("rtc_configuration", _rtc_configuration())
 
-        if not has_turn:
-            st.warning(
-                "TURN relay is not configured. If the camera stays on "
-                "'Connection is taking longer than expected', add "
-                "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in Streamlit Secrets."
-            )
+    # The app uses the legacy class-based video_processor_factory API. Running
+    # it synchronously is more stable on Community Cloud and avoids extra frame
+    # worker lifecycle races during rapid Streamlit reruns / disconnects.
+    kwargs["async_processing"] = False
 
     return _original_webrtc_streamer(*args, **kwargs)
 
@@ -103,10 +102,15 @@ streamlit_webrtc.webrtc_streamer = _cloud_webrtc_streamer
 
 
 # ============================================================
-# 2. FORCE 2D LANDMARK GEOMETRY
+# FORCE 2D LANDMARK GEOMETRY — IDEMPOTENT PATCH
 # ============================================================
 
-_original_hands_process = mp.solutions.hands.Hands.process
+HandsClass = mp.solutions.hands.Hands
+
+if not hasattr(HandsClass, "_signova_original_process"):
+    HandsClass._signova_original_process = HandsClass.process
+
+_original_hands_process = HandsClass._signova_original_process
 
 
 def _process_without_depth(self, image):
@@ -120,15 +124,21 @@ def _process_without_depth(self, image):
     return result
 
 
-mp.solutions.hands.Hands.process = _process_without_depth
+HandsClass.process = _process_without_depth
 
 
 # ============================================================
-# 3. ROBUST CLASSIFIER DROP-IN
+# ROBUST CLASSIFIER DROP-IN — IDEMPOTENT PATCH
 # ============================================================
+
+if not hasattr(sklearn.neighbors, "_signova_original_knn"):
+    sklearn.neighbors._signova_original_knn = (
+        sklearn.neighbors.KNeighborsClassifier
+    )
+
 
 class RobustSignClassifier(BaseEstimator, ClassifierMixin):
-    """Drop-in replacement for KNeighborsClassifier using a balanced RBF-SVM."""
+    """KNN-compatible constructor backed by a balanced probabilistic RBF-SVM."""
 
     def __init__(self, n_neighbors=5, weights="distance"):
         self.n_neighbors = n_neighbors
@@ -162,7 +172,17 @@ sklearn.neighbors.KNeighborsClassifier = RobustSignClassifier
 
 
 # ============================================================
-# START SIGNOVA
+# EXECUTE THE REAL STREAMLIT APP ON EVERY RERUN
 # ============================================================
 
-import app  # noqa: E402,F401
+# `import app` only executes once per Python process because of Python's import
+# cache. Streamlit expects the main script to execute on every rerun. Executing
+# app.py explicitly gives it normal Streamlit rerun semantics while preserving
+# this compatibility layer.
+_app_path = Path(__file__).with_name("app.py")
+_app_code = compile(
+    _app_path.read_text(encoding="utf-8"),
+    str(_app_path),
+    "exec",
+)
+exec(_app_code, globals(), globals())

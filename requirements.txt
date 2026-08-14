@@ -1,4 +1,7 @@
 streamlit
+streamlit-webrtc
+av
+mediapipe
 numpy
 Pillow
 scikit-learn

@@ -8,3 +8,4 @@ numpy==1.26.4
 protobuf==4.25.8
 Pillow
 scikit-learn
+twilio==9.10.9

@@ -81,10 +81,30 @@ def _secret(name):
         return None
 
 
+def _urls_from_ice_server(server):
+    if not isinstance(server, dict):
+        return []
+    urls = server.get("urls", server.get("url", []))
+    if isinstance(urls, str):
+        return [urls]
+    if isinstance(urls, (list, tuple)):
+        return [str(url) for url in urls]
+    return []
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_turn_config(account_sid, auth_token):
     token = Client(account_sid, auth_token).tokens.create()
-    return {"iceServers": token.ice_servers}
+    ice_servers = token.ice_servers
+
+    # Streamlit Community Cloud and this client network have already shown that
+    # direct/STUN-only ICE paths fail. Force the browser to use relay candidates
+    # only, so it must connect through Twilio TURN instead of retrying blocked
+    # host/server-reflexive candidates.
+    return {
+        "iceServers": ice_servers,
+        "iceTransportPolicy": "relay",
+    }
 
 
 def require_turn_config():
@@ -107,10 +127,28 @@ def require_turn_config():
         )
         st.stop()
 
-    if not config.get("iceServers"):
+    ice_servers = config.get("iceServers") or []
+    if not ice_servers:
         st.error("Twilio returned no ICE servers.")
         st.stop()
 
+    turn_urls = []
+    for server in ice_servers:
+        for url in _urls_from_ice_server(server):
+            if url.lower().startswith(("turn:", "turns:")):
+                turn_urls.append(url)
+
+    if not turn_urls:
+        st.error(
+            "Twilio credentials are valid, but the token contained no TURN relay "
+            "endpoints. WebRTC cannot start on this network."
+        )
+        st.stop()
+
+    st.caption(
+        f"TURN relay ready: {len(turn_urls)} relay endpoint(s). "
+        "WebRTC is forced to relay-only mode."
+    )
     return config
 
 
@@ -293,6 +331,9 @@ def train_model(X, y):
 
     if not train_idx or not test_idx:
         return model, None, 0, 0
+
+    train_idx = np.asarray(train_idx, dtype=int)
+    test_idx = np.asarray(test_idx, dtype=int)
 
     eval_model = Pipeline([
         ("scaler", StandardScaler()),
@@ -516,8 +557,8 @@ if page == "🎥 Live Translator":
 
     st.markdown("### Live camera")
     st.caption(
-        "Click START and allow camera access. The processed video itself shows "
-        "the current sign, confidence, and text sequence."
+        "Click START. Your native camera test already passed, so this connection "
+        "is forced through Twilio TURN relay-only mode."
     )
 
     rtc_config = require_turn_config()
@@ -532,11 +573,11 @@ if page == "🎥 Live Translator":
     )
 
     if ctx.state.playing:
-        st.success("Camera stream is connected.")
+        st.success("Camera stream is connected through WebRTC.")
     else:
         st.info(
-            "If START does not open the camera permission prompt, allow Camera "
-            "for this Streamlit site in your browser settings, then reload."
+            "Native camera access is confirmed. If START still cannot connect, "
+            "the remaining failure is the TURN relay path rather than camera permission."
         )
 
 elif page == "📊 Dataset Lab":
